@@ -1,0 +1,269 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ACCESS LEVELS ───────────────────────────────────────────────────────────
+// 0 = public | 1 = known | 2 = family | 3 = owner_only | 4 = confirm_required
+
+// ─── PROFILE ─────────────────────────────────────────────────────────────────
+model Profile {
+  id          String   @id @default(cuid())
+  name        String
+  alias       String?
+  bio         String?
+  avatar_url  String?
+  timezone    String   @default("Asia/Ho_Chi_Minh")
+  locale      String   @default("vi")
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  preferences Preference[]
+}
+
+// ─── PREFERENCES ─────────────────────────────────────────────────────────────
+model Preference {
+  id          String   @id @default(cuid())
+  profile_id  String
+  key         String
+  value       String
+  group       String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  profile     Profile  @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  @@unique([profile_id, key])
+}
+
+// ─── MEMORY ──────────────────────────────────────────────────────────────────
+model Memory {
+  id           String   @id @default(cuid())
+  title        String
+  content      String
+  tags         String[] @default([])
+  category     String   @default("general")
+  access_level Int      @default(1)
+  source       String?
+  project_id   String?
+  pinned       Boolean  @default(false)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  project      Project? @relation(fields: [project_id], references: [id])
+}
+
+// ─── PRIVATE MEMORY ──────────────────────────────────────────────────────────
+model PrivateMemory {
+  id           String   @id @default(cuid())
+  title        String
+  content      String
+  tags         String[] @default([])
+  category     String   @default("vault")
+  access_level Int      @default(3)
+  encrypted    Boolean  @default(false)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+}
+
+// ─── PEOPLE ──────────────────────────────────────────────────────────────────
+model People {
+  id           String   @id @default(cuid())
+  name         String
+  alias        String?
+  relation     String?
+  notes        String?
+  contact      Json?
+  access_level Int      @default(2)
+  tags         String[] @default([])
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  face_profile FaceProfile?
+}
+
+// ─── FACE PROFILE ────────────────────────────────────────────────────────────
+model FaceProfile {
+  id             String   @id @default(cuid())
+  person_id      String   @unique
+  face_embedding Json?
+  enrolled_at    DateTime?
+  last_seen_at   DateTime?
+  confidence     Float    @default(0)
+  store_raw      Boolean  @default(false)
+  notes          String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  person         People   @relation(fields: [person_id], references: [id], onDelete: Cascade)
+}
+
+// ─── PROJECT ─────────────────────────────────────────────────────────────────
+model Project {
+  id           String        @id @default(cuid())
+  name         String
+  slug         String        @unique
+  description  String?
+  status       ProjectStatus @default(active)
+  color        String        @default("#6366f1")
+  icon         String?
+  pinned       Boolean       @default(false)
+  created_at   DateTime      @default(now())
+  updated_at   DateTime      @updatedAt
+
+  tasks        Task[]
+  memories     Memory[]
+  decisions    Decision[]
+}
+
+enum ProjectStatus {
+  active
+  paused
+  completed
+  archived
+}
+
+// ─── TASK ─────────────────────────────────────────────────────────────────────
+model Task {
+  id           String     @id @default(cuid())
+  title        String
+  description  String?
+  status       TaskStatus @default(todo)
+  priority     Int        @default(2)
+  project_id   String?
+  parent_id    String?
+  due_date     DateTime?
+  tags         String[]   @default([])
+  created_at   DateTime   @default(now())
+  updated_at   DateTime   @updatedAt
+
+  project      Project?   @relation(fields: [project_id], references: [id])
+  parent       Task?      @relation("subtasks", fields: [parent_id], references: [id])
+  subtasks     Task[]     @relation("subtasks")
+}
+
+enum TaskStatus {
+  todo
+  in_progress
+  done
+  cancelled
+}
+
+// ─── DECISION ────────────────────────────────────────────────────────────────
+model Decision {
+  id           String   @id @default(cuid())
+  title        String
+  rationale    String?
+  outcome      String?
+  status       String   @default("active")
+  project_id   String?
+  tags         String[] @default([])
+  decided_at   DateTime @default(now())
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  project      Project? @relation(fields: [project_id], references: [id])
+}
+
+// ─── PROMPT ──────────────────────────────────────────────────────────────────
+model Prompt {
+  id           String   @id @default(cuid())
+  title        String
+  body         String
+  category     String   @default("general")
+  tags         String[] @default([])
+  model        String?
+  pinned       Boolean  @default(false)
+  access_level Int      @default(1)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+}
+
+// ─── DEVICE ──────────────────────────────────────────────────────────────────
+model Device {
+  id           String       @id @default(cuid())
+  name         String
+  device_type  DeviceType
+  description  String?
+  status       DeviceStatus @default(offline)
+  ip_address   String?
+  mac_address  String?
+  token        String?      @unique
+  capabilities String[]     @default([])
+  meta         Json?
+  last_seen_at DateTime?
+  created_at   DateTime     @default(now())
+  updated_at   DateTime     @updatedAt
+
+  events       DeviceEvent[]
+}
+
+enum DeviceType {
+  robot
+  laptop
+  camera
+  tv
+  esp32
+  browser
+  other
+}
+
+enum DeviceStatus {
+  online
+  offline
+  idle
+  error
+}
+
+// ─── DEVICE EVENT ────────────────────────────────────────────────────────────
+model DeviceEvent {
+  id         String   @id @default(cuid())
+  device_id  String
+  event_type String
+  payload    Json?
+  created_at DateTime @default(now())
+
+  device     Device   @relation(fields: [device_id], references: [id], onDelete: Cascade)
+}
+
+// ─── CONNECTOR ───────────────────────────────────────────────────────────────
+model Connector {
+  id           String          @id @default(cuid())
+  name         String
+  connector_type ConnectorType
+  enabled      Boolean         @default(false)
+  config       Json?
+  description  String?
+  created_at   DateTime        @default(now())
+  updated_at   DateTime        @updatedAt
+}
+
+enum ConnectorType {
+  telegram
+  gmail
+  n8n
+  webhook
+  ruaanh
+  robot
+  custom
+}
+
+// ─── ACTIVITY LOG ────────────────────────────────────────────────────────────
+model ActivityLog {
+  id         String   @id @default(cuid())
+  action     String
+  entity     String?
+  entity_id  String?
+  actor      String   @default("owner")
+  device_id  String?
+  payload    Json?
+  ip_address String?
+  created_at DateTime @default(now())
+
+  @@index([entity, entity_id])
+  @@index([created_at])
+}
