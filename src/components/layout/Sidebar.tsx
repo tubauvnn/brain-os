@@ -13,6 +13,7 @@ const NAV = [
   { href: "/decisions", label: "Quyết định", icon: "◆" },
   { href: "/prompts", label: "Prompts", icon: "◇" },
   { href: "/devices", label: "Thiết bị", icon: "◻" },
+  { href: "/robot", label: "Robot", icon: "◎" },
   { href: "/logs", label: "Logs", icon: "≡" },
 ];
 

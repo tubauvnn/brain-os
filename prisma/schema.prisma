@@ -200,6 +200,7 @@ model Device {
   updated_at   DateTime     @updatedAt
 
   events       DeviceEvent[]
+  robot_state  RobotState?
 }
 
 enum DeviceType {
@@ -217,6 +218,21 @@ enum DeviceStatus {
   offline
   idle
   error
+}
+
+// ─── ROBOT STATE ─────────────────────────────────────────────────────────────
+// Trạng thái mô phỏng cho Robot Simulator (1 dòng / device robot).
+model RobotState {
+  id              String    @id @default(cuid())
+  device_id       String    @unique
+  mode            String    @default("idle")
+  face            String    @default("idle")
+  battery         Int       @default(100)
+  last_command    String?
+  last_command_at DateTime?
+  updated_at      DateTime  @updatedAt
+
+  device          Device    @relation(fields: [device_id], references: [id], onDelete: Cascade)
 }
 
 // ─── DEVICE EVENT ────────────────────────────────────────────────────────────

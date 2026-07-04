@@ -133,7 +133,27 @@ async function main() {
         status: "offline",
         capabilities: ["motor", "sensor", "wifi", "serial"],
       },
+      {
+        id: "dev-robot-simulator",
+        name: "Robot ChinChin Web Simulator",
+        device_type: "robot",
+        description: "Robot ảo chạy trên web — mô phỏng cho Robot ChinChin trước khi nối ESP32/C920/TV thật.",
+        status: "online",
+        capabilities: ["face", "speak", "turn"],
+      },
     ],
+  });
+
+  // Robot Simulator — trạng thái mặc định
+  await prisma.robotState.upsert({
+    where: { device_id: "dev-robot-simulator" },
+    update: {},
+    create: {
+      device_id: "dev-robot-simulator",
+      mode: "idle",
+      face: "idle",
+      battery: 100,
+    },
   });
 
   // Decisions

@@ -1,9 +1,9 @@
 # STATE — Trạng thái Brain OS MVP
 
 **Ngày tạo:** 2026-07-04  
-**Cập nhật:** 2026-07-04 (phiên 3)  
-**Phiên bản:** 0.1.0 MVP  
-**Trạng thái:** Full stack chạy được — install, generate, migrate, seed, build đều pass. Database có dữ liệu mẫu thật.
+**Cập nhật:** 2026-07-04 (phiên 4)  
+**Phiên bản:** 0.1.0 MVP + Robot Simulator  
+**Trạng thái:** Full stack chạy được — install, generate, migrate, seed, build đều pass. Database có dữ liệu mẫu thật. Robot Web Simulator hoạt động, đã test qua curl thực tế.
 
 ---
 
@@ -32,7 +32,7 @@
 - [x] `POST /api/face/identify` (stub MVP)
 
 ### UI Pages
-- [x] Layout + Sidebar (11 nav items)
+- [x] Layout + Sidebar (12 nav items)
 - [x] Dashboard (`/`) — stats, active tasks, pinned memories, recent logs
 - [x] Hồ sơ (`/profile`)
 - [x] Trí nhớ (`/memories`)
@@ -43,7 +43,24 @@
 - [x] Quyết định (`/decisions`)
 - [x] Prompts (`/prompts`)
 - [x] Thiết bị (`/devices`)
+- [x] Robot Simulator (`/robot`) — mặt robot, panel trạng thái, nút điều khiển, event log
 - [x] Logs (`/logs`)
+
+### Robot Simulator (phiên 4 — 2026-07-04)
+
+Robot ảo chạy hoàn toàn trên web — mô phỏng cho Robot ChinChin trước khi nối ESP32/C920/TV thật. Không dùng phần cứng, không có AI agent thật (chỉ mapping command → state cố định).
+
+- **Model mới:** `RobotState` (1 dòng / device robot) — `mode`, `face`, `battery`, `last_command`, `last_command_at`. Quan hệ 1-1 với `Device` (`device_id @unique`).
+- **Device seed:** `dev-robot-simulator` — "Robot ChinChin Web Simulator", `device_type: robot`, `status: online`.
+- **Logic thuần (không AI):** `src/lib/robot.ts` — `applyRobotCommand()` map 10 command → `{mode, face, battery, message}`. Pin giả lập giảm 2%/lệnh (sàn 5%), lệnh `sleep` sạc lại 100%.
+- **API:**
+  - `GET /api/robot/status` — trạng thái hiện tại + 20 event gần nhất. `export const dynamic = "force-dynamic"` (bắt buộc, xem Lỗi đã sửa bên dưới).
+  - `POST /api/robot/command` — body `{command, payload}`, validate qua Zod enum 10 giá trị. Ghi `DeviceEvent` (`event_type: "robot_command"`) + `ActivityLog` (`action: "robot.command"`).
+  - `POST /api/robot/event` — passthrough tương đương `/api/devices/:id/events` nhưng tự resolve robot device, dùng cho ESP32 thật sau này.
+  - Response format riêng theo yêu cầu: `{ok, state, message}` (khác `{ok, data}` của các route khác) — dùng `NextResponse.json` trực tiếp thay vì helper `ok()`.
+- **UI `/robot`:** client component, fetch `/api/robot/status` khi mount, gọi `/api/robot/command` khi bấm nút. 6 mặt (idle/happy/speaking/sleep/surprised/thinking) hiển thị bằng emoji lớn. Event log merge từ `recent_events` (server) + log mới append client-side.
+- **Đã test qua curl thực tế:** status, greet, speak (custom text), sleep (battery recharge 100%), invalid command (422 Zod error), event (heartbeat), ActivityLog ghi đúng 4 action `robot.command`/`robot.event`. Trang `/robot` trả 200.
+- Robot là **interface của Brain OS**, không phải app tách rời — dùng lại `Device` + `ActivityLog` sẵn có, không hard-code logic robot vào core (đúng nguyên tắc BRAIN_SPEC.md #1, #3).
 
 ### Infrastructure
 - [x] `src/lib/prisma.ts` — singleton
@@ -67,6 +84,9 @@
 | `src/app/layout.tsx` | Root layout |
 | `src/app/api/context/route.ts` | Context API cho AI agent |
 | `src/app/api/devices/[id]/command/route.ts` | Device command |
+| `src/lib/robot.ts` | Logic mapping command → state cho Robot Simulator |
+| `src/app/robot/page.tsx` | UI Robot Simulator |
+| `src/app/api/robot/{status,command,event}/route.ts` | API Robot Simulator |
 
 ---
 
@@ -80,6 +100,12 @@
 - Connector chưa có handler thực — chỉ là placeholder
 - `next@14.1.0` có cảnh báo security (npm audit) — chưa upgrade, để tránh phá vỡ scope hiện tại
 - `prisma` v5.22.0 có bản mới 7.8.0 (major) — chưa upgrade, ngoài scope hiện tại
+- Robot Simulator: `turn_left`/`turn_right` không có mô phỏng góc quay/hướng thực (chỉ đổi `mode`, giữ nguyên `face`) — đủ cho MVP
+- Robot Simulator: event log trên UI chỉ giữ tối đa 50 dòng trong state client, không có phân trang
+
+## Lỗi đã sửa (phiên 4 — 2026-07-04, Robot Simulator)
+
+1. **`GET /api/robot/status` bị Next.js static-optimize thành `○` (prerendered) thay vì `λ` (dynamic)** — route không dùng `NextRequest`/cookies nên Next coi là static và sẽ cache dữ liệu tại thời điểm build. Fix: thêm `export const dynamic = "force-dynamic";` — đã verify lại build log chuyển đúng thành `λ /api/robot/status`.
 
 ## Database (phiên 3 — 2026-07-04)
 
