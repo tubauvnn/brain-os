@@ -1,9 +1,9 @@
 # STATE — Trạng thái Brain OS MVP
 
 **Ngày tạo:** 2026-07-04  
-**Cập nhật:** 2026-07-04 (phiên 14)  
-**Phiên bản:** 0.1.0 MVP + Robot Simulator + Tablet/PWA + Browser TTS + Chat/Voice/Camera + Gemini AI Provider (chống 429) + Domain HTTPS (chưa xong — chờ user xác nhận URL NPM)  
-**Trạng thái:** Full stack chạy được — install, generate, migrate, seed, build đều pass. Database có dữ liệu mẫu thật. Robot chat dùng kiến trúc AI Provider hoàn chỉnh (Gemini thật hoặc fallback mẫu), context lấy từ Profile/Preferences/Memory/PrivateMemory (theo access_level)/Decisions/Projects/Tasks/5 tin nhắn gần nhất, giới hạn tổng 8000 ký tự. **Chống 429:** khi Gemini rate-limit, tự động fallback (`provider: "fallback_429"`) + cooldown 60s toàn cục, tránh dội thêm request — đã test end-to-end thật với key thật đang bị 429 (xác nhận cả lúc kích hoạt cooldown lẫn lúc cooldown hết hạn tự thử lại). Robot lưu ảnh chụp camera vào `MediaFile`. `/robot` hiển thị rõ 3 khối Chat/Voice/Camera. **Domain `os.irec.vn`:** vẫn chưa hoạt động (`https://os.irec.vn` → 525) — đang chờ user xác nhận URL họ dùng để truy cập NPM (xem phiên 12), **việc này đang treo, cần quay lại sau**.
+**Cập nhật:** 2026-07-05 (phiên 27)  
+**Phiên bản:** 0.1.0 MVP + Robot Simulator (mặt SVG animate + camera tracking) + Tablet/PWA + Chat/Voice/Camera + Hands-free Voice Mode (OpenAI STT + OpenAI TTS) + Smart Robot Fullscreen Mode + Session/ngữ cảnh hội thoại + OpenAI provider chính + CLI Agent Router chế độ `deep` + Xiaozi/Xiaozhi Bridge (template-first, phiên 24) + Postgres persistence: named volume + backup + health check (phiên 25) + Xiaozi webhook auth: secret token + rate limit + docs (phiên 26) + **Domain `os.irec.vn` đã sống + secret thật đã set (phiên 27)**  
+**Trạng thái:** Full stack chạy được — install, generate, migrate, seed, build đều pass. **Phiên 27 — domain public đã hoạt động và webhook đã có secret thật:** `https://os.irec.vn` giờ trả `200` thật (khác ghi nhận cũ "525, đang treo" — không rõ ai/khi nào đã sửa NPM, nhưng đã verify lại bằng curl thật, xem chi tiết bên dưới). `XIAOZI_WEBHOOK_SECRET` trong `.env` đã được đổi từ placeholder `"change-me"` sang secret thật (`openssl rand -hex 32`, **giá trị không ghi ở đây, không log ở đâu cả** — chỉ có trong `.env` trên VPS). Đã test qua đúng domain thật `https://os.irec.vn/api/xiaozi/chat`: không có secret → `401`; có đúng secret (`x-brainos-secret`) → `200`, `provider:"brain_local"`. `.env.backup.<timestamp>` được tạo trước khi đổi (không commit, không nằm trong git). Webhook Xiaozi giờ **sẵn sàng để nhập vào cấu hình thiết bị thật** — xem NEXT.md. `/api/xiaozi/chat` có auth (phiên 26): request local (`127.0.0.1`/`localhost`) qua thẳng để test nội bộ; request public bắt buộc `x-brainos-secret` hoặc `Authorization: Bearer <secret>`; rate limit in-memory 60 request/phút/`deviceId`. `GET /api/xiaozi/status` không lộ secret thật, có `authConfigured`/`database`/`providerMode`/`samplePayload`. Postgres (phiên 25) đã bền dữ liệu qua named volume `brainos_pgdata`, có `npm run db:backup` + `GET /api/health/db`. Robot chat (`/api/robot/chat`, dùng cho `/robot` simulator) mặc định gọi **OpenAI API** (`gpt-5.4-nano`, ~2s); `deep: true` mới dùng CLI Agent Router. Chat/voice **nhớ ngữ cảnh trong 1 phiên** (phiên 21). Hands-free Voice Mode (OpenAI STT/TTS, phiên 22). Smart Robot Fullscreen Mode (phiên 23). Xiaozi/Xiaozhi Bridge (phiên 24): webhook theo mô hình **template-first**, mặc định OpenAI **tắt** (`ENABLE_OPENAI_FALLBACK=false`). **Auth thật của Codex CLI và Gemini CLI trên VPS này vẫn chưa xong** (xem phiên 17) — chỉ Claude CLI hoạt động trong CLI Agent Router, không ảnh hưởng nhánh OpenAI mặc định. Robot lưu ảnh chụp camera vào `MediaFile`.
 
 ---
 
@@ -30,7 +30,7 @@
 - [x] `GET/POST /api/logs`
 - [x] `POST /api/face/enroll`
 - [x] `POST /api/face/identify` (stub MVP)
-- [x] `POST /api/robot/chat` — chat với robot, lưu ConversationMessage, trả lời template/Gemini
+- [x] `POST /api/robot/chat` — chat với robot, lưu ConversationMessage (best-effort), trả lời qua CLI agent router (Codex/Claude/Gemini CLI → fallback, xem phiên 16)
 - [x] `POST /api/media/upload` + `GET /api/media` + `GET/DELETE /api/media/:id`
 
 ### UI Pages
@@ -96,7 +96,260 @@ Chỉ dùng **Web Speech API** (`window.speechSynthesis`) có sẵn trong trình
 - Nút bị `disabled` + tooltip nếu trình duyệt không hỗ trợ `speechSynthesis` (kiểm tra qua `"speechSynthesis" in window`).
 - **Đã verify:** `npm run build` pass, `/robot` trả 200, nút "Âm thanh: Bật" và text mặc định "Xin chào, tôi là ChinChin." xuất hiện đúng trong HTML render. **Chưa** nghe thử giọng đọc thật (cần trình duyệt thật có loa/tai nghe) — cần user tự test.
 
-### Chống Gemini 429 (phiên 14 — 2026-07-04)
+### Smart Robot Fullscreen Mode — camera tracking + mắt nhìn theo người (phiên 23 — 2026-07-05)
+
+Yêu cầu: khi bật fullscreen, robot vẫn nghe mic, vẫn dùng camera nhìn theo người, mắt/mặt nhìn theo vị trí người đứng trước camera — không tạo ảnh, không phá chat/STT/TTS hiện có.
+
+**File mới:**
+- `src/lib/robot/tracking.ts` — `targetToPanTilt({x, y})`: chuyển toạ độ tracking (-1..1) thành góc pan (±45°)/tilt (±25°) giả định + cờ `centered` (lệch < 0.18 cả 2 trục). **Servo-ready nhưng chưa gọi phần cứng** — hiện chỉ dùng để `console.debug()` trong `page.tsx`, đúng yêu cầu "tạm chỉ console/debug hiển thị pan/tilt".
+- `src/components/robot/RobotVision.tsx` — component camera + phát hiện người/mặt nhẹ, không model nặng:
+  - `getUserMedia({video:{facingMode:"user"}, audio:false})`, chỉ chạy khi `enabled=true` (props), dừng hẳn (`stop tracks`) khi `enabled=false`/unmount.
+  - Xử lý 1 khung mỗi 400ms qua `setInterval`, vẽ vào canvas ẩn 64×64px (đủ nhẹ, không cần độ phân giải cao cho ước lượng vị trí).
+  - **Option A:** dùng `FaceDetector` của trình duyệt nếu có (`window.FaceDetector`, API thử nghiệm, chủ yếu Chrome — khai báo type tối thiểu vì chưa có trong `lib.dom.d.ts`).
+  - **Option B (fallback):** motion detection tự viết — so 2 khung liên tiếp từng pixel, tính "trọng tâm" vùng thay đổi nhiều nhất (weighted centroid theo độ lệch màu RGB) làm vị trí ước lượng. Không phải nhận diện khuôn mặt thật, chỉ đủ để mắt robot "có vẻ" nhìn theo chuyển động trước camera — chấp nhận được cho MVP demo, không dùng model nặng (đúng yêu cầu "không bắt buộc model nặng ở bước này").
+  - Trả về `{detected, x, y, size, label, confidence}` qua callback `onTargetUpdate` — không tạo ảnh, không gửi frame lên server, xử lý hoàn toàn phía client.
+  - Preview debug (`debug=true`) là `<video>` nhỏ góc màn hình, mirror CSS (`scale-x-[-1]`, giống gương selfie) — **không ảnh hưởng toạ độ tracking** vì `drawImage()` luôn đọc frame gốc chưa mirror của phần tử `<video>`, bất kể CSS transform áp lên nó để hiển thị.
+  - **Lưu ý mirror/hướng trái-phải:** toạ độ `x` tính theo frame camera gốc (chưa mirror) — nếu sau này test tay thấy "cảm giác ngược" (người dịch sang phải mà mắt robot nhìn sang trái), chỉ cần đảo dấu `x` ở `handleVisionTarget()` trong `page.tsx`, không cần sửa `RobotVision.tsx`.
+
+**Nâng `src/components/robot/RobotFace.tsx`:**
+- Thêm prop `gazeX?`, `gazeY?` (-1..1) và `targetDetected?: boolean`.
+- Bọc `<Eyes />` trong 1 `<g>` — nếu có `gazeX`/`gazeY` và `targetDetected !== false`, dịch chuyển bằng thuộc tính SVG `transform` gốc (không phải CSS `style.transform`) để tỉ lệ lệch đúng theo kích thước SVG dù render lớn (kiosk) hay nhỏ (card thường) — CSS pixel transform sẽ bị sai tỉ lệ giữa 2 kích thước khác nhau.
+- **`targetDetected === false` (khác `undefined`)** mới bật hiệu ứng "quét mắt trái-phải" — dùng `<animateTransform>` SVG gốc (SMIL, không JS/CSS keyframe), lặp 4s. Phân biệt chặt `false` vs `undefined` để các chỗ dùng `RobotFace` khác (không có RobotVision) giữ nguyên hành vi tĩnh như phiên 20, không tự nhiên bật hiệu ứng quét ngoài ý muốn.
+- Các state khác (listening mắt to, thinking mắt nhìn lên/dấu chấm chạy, speaking miệng động, happy mắt cong má sáng...) **giữ nguyên 100%** từ phiên 20 — gaze chỉ là 1 lớp dịch chuyển thêm vào, không thay logic chọn Eyes/Mouth theo state.
+
+**Sửa `src/app/robot/page.tsx`:**
+- State mới: `isFullscreenRobot`, `cameraTrackingEnabled`, `visionDebug`, `visionTarget`, `gazeX`/`gazeY`, `targetDetected`, ref `kioskRef` — tách hoàn toàn khỏi `isFullscreen`/`faceCardRef` cũ (nút "⛶" đơn giản chỉ phóng to mặt, giữ nguyên không đổi).
+- `<RobotVision>` mount **1 lần, luôn luôn** ở gốc cây component (không lồng trong kiosk view) — để "📷 Tracking" hoạt động độc lập với fullscreen (bật tracking xem thử trước khi vào kiosk cũng được, đúng yêu cầu 2 nút tách biệt).
+- `handleVisionTarget()`: làm mượt (lerp 0.5) `gazeX`/`gazeY` từ target mới mỗi ~400ms thay vì snap thẳng — mắt di chuyển tự nhiên hơn, đỡ giật. Gọi `targetToPanTilt()` + `console.debug()` mỗi lần có target (servo-ready, chưa gọi phần cứng).
+- `enterFullscreenRobotMode()`: bật `isFullscreenRobot` + `cameraTrackingEnabled`, tự `startVoiceMode()` nếu voice mode chưa bật ("bật voice mode nếu người dùng cho phép" — `startVoiceMode()` đã tự xin quyền mic sẵn có từ phiên 21, xin bị từ chối thì set trạng thái "unsupported" như cũ, không crash).
+- Kiosk view render có điều kiện (`isFullscreenRobot`) — `<div ref={kioskRef} className="fixed inset-0 z-50 ...">` chứa RobotFace lớn (`w-[min(78vw,78vh)]`), status ngắn ("Đang nghe"/"Nhìn thấy bạn"...), transcript nhỏ, provider nhỏ, 3 nút (Exit/Tracking/Debug cam). `useEffect` riêng gọi `kioskRef.current.requestFullscreen()` **sau khi** div đã mount (không gọi ngay lúc bấm nút, tránh gọi trên node chưa tồn tại) — nếu Fullscreen API bị từ chối (vd iOS Safari), lớp `fixed inset-0` vẫn giả lập layout toàn màn hình qua CSS, chỉ mất phần ẩn thanh địa chỉ trình duyệt.
+- `fullscreenchange` listener (đã có từ trước cho `isFullscreen`) mở rộng thêm: nếu `document.fullscreenElement !== kioskRef.current` thì tự tắt `isFullscreenRobot` — bắt được cả trường hợp user thoát fullscreen bằng phím Esc/nút trình duyệt, không chỉ qua nút "Exit Fullscreen" của mình.
+- Ngoài kiosk, card mặt robot (layout thường) cũng có sẵn 2 nút mới "📷 Tracking"/"🐞 Debug cam" cạnh nút "⛶" cũ + Badge "Nhìn thấy bạn"/"Đang tìm người" khi tracking bật — dùng thử camera tracking mà không cần vào fullscreen.
+
+**Đã test:** `npm run build` pass, `/robot` trả 200, HTML chứa đủ 3 nút mới ("Fullscreen Robot", "📷 Tracking", "Debug cam"), kiosk view đúng là KHÔNG render khi `isFullscreenRobot` mặc định `false` (xác nhận conditional render hoạt động đúng). `POST /api/robot/chat` test lại xác nhận không bị ảnh hưởng. **Chưa test camera/FaceDetector/motion-detection bằng mắt thật** (không có trình duyệt/mic/camera thật trong môi trường này) — cần user tự thử, đặc biệt kiểm tra hướng mắt trái-phải có đúng chiều không (xem ghi chú mirror ở `RobotVision.tsx`).
+
+### OpenAI TTS thay browser speechSynthesis làm giọng đọc chính (phiên 22 — 2026-07-05)
+
+Yêu cầu: browser TTS (`speechSynthesis`) nghe chưa hay, tạm dùng OpenAI TTS (chưa dùng ElevenLabs).
+
+**ENV mới (đã thêm vào `.env`):** `OPENAI_TRANSCRIBE_MODEL="gpt-4o-mini-transcribe"` (phiên 21, quên ghi lúc đó), `TTS_PROVIDER="openai"`, `OPENAI_TTS_MODEL="gpt-4o-mini-tts"`, `OPENAI_TTS_VOICE="coral"`. Cũng sửa lại comment cũ trong `.env` (dòng nói "không còn OPENAI_API_KEY vì không ai đọc nữa" — sai từ phiên 18, OpenAI đã là provider chính).
+
+**File mới:** `src/app/api/robot/tts/route.ts` — nhận JSON `{text, voice?}`, gọi thẳng OpenAI `/v1/audio/speech` (model `OPENAI_TTS_MODEL`/mặc định code `gpt-4o-mini-tts`, voice từ body hoặc `OPENAI_TTS_VOICE`/mặc định code `"coral"`, `instructions` cố định "Nói tiếng Việt giọng Bắc, thân thiện, ngắn gọn, tự nhiên, giống robot mascot ChinChin.", `response_format:"mp3"`), timeout 20s, không log text đầy đủ (chỉ dùng nội bộ, không console.log) và không log API key. **Trả thẳng audio nhị phân** (`Content-Type: audio/mpeg`), không bọc JSON — để client `fetch().blob()` rồi phát bằng `HTMLAudioElement` trực tiếp.
+
+**Sửa `src/app/robot/page.tsx`:**
+- `speak()` cũ đổi tên thành `speakBrowser()` (giữ nguyên 100% logic, dùng làm fallback).
+- `speak()` mới: thử gọi `/api/robot/tts` trước (kèm `voice: ttsVoice`), phát bằng `new Audio(URL.createObjectURL(blob))`. `isSpeaking` bật lúc bắt đầu phát (trước `await audio.play()`), tắt lúc `onended`/`onerror`. **Bất kỳ lỗi nào** (network, HTTP lỗi, `res.blob()` lỗi, hay `audio.play()` bị chặn bởi autoplay policy — promise reject, rơi vào cùng `catch`) đều fallback gọi `speakBrowser(text, onEnd)` — không bao giờ để robot "câm" hoàn toàn. Tham số `onEnd` giữ nguyên vị trí/ý nghĩa như phiên 19 (hands-free vẫn chain nghe tiếp đúng cách, không đổi gì ở phía gọi).
+- Thêm `currentAudioRef` (ref tới `HTMLAudioElement` đang phát) để `interruptRobotSpeaking()` dừng được audio OpenAI TTS (khác `speechSynthesis.cancel()` chỉ dừng được browser TTS) — cả 2 đều được gọi khi ngắt lời robot, dù cái nào đang phát cũng dừng đúng.
+- Dropdown chọn voice (`coral`/`marin`/`cedar`/`nova`/`shimmer`/`alloy`) trong card "Điều khiển", lưu `localStorage["robot_tts_voice"]`, đọc lại lúc mount. Nút bật/tắt âm thanh (🔊/🔇) giữ nguyên vị trí — **bỏ điều kiện `disabled={!speechSupported}`** cũ (vô lý với kiến trúc mới: OpenAI TTS không cần `speechSynthesis` để hoạt động, chỉ browser-fallback mới cần).
+- Face/mode khi TTS phát/kết thúc **không cần sửa gì thêm** — đã tự đúng từ phiên 20 nhờ `isSpeaking` điều khiển `RobotFace` qua cơ chế ưu tiên có sẵn (`isSpeaking > ... > face`), không phân biệt provider TTS nào đang phát.
+
+**Đã test qua curl thật:** `POST /api/robot/tts {"text":"Xin chào, tôi là robot ChinChin.","voice":"coral"}` → file MP3 thật 55KB (`MPEG ADTS, layer III, v2, 128 kbps, 24 kHz, Monaural` theo `file`), phát được. Test round-trip TTS→transcribe (dùng chính audio vừa tạo) → nhận lại đúng text gốc, xác nhận audio hợp lệ không chỉ đúng định dạng mà đúng nội dung thật.
+
+### OpenAI STT + lưu ngữ cảnh hội thoại theo session (phiên 21 — 2026-07-05)
+
+Yêu cầu: mic chuẩn hơn (browser SpeechRecognition nhận tiếng Việt chưa tốt) + lưu đầy đủ hội thoại vào DB + robot nhớ được vài câu vừa nói trong phiên.
+
+**Schema (migration `20260705104517_conversation_session_and_metadata`, chỉ thêm field/bảng optional — không phá dữ liệu cũ):**
+- Model mới `ConversationSession` (`id`, `title?`, `source` mặc định `"robot"`, `created_at`, `updated_at`, quan hệ 1-N với `ConversationMessage`).
+- `ConversationMessage` thêm 3 field optional: `source String?` (`"voice"|"text"`), `metadata Json?`, `session_id String?` (FK tới `ConversationSession`, `onDelete: SetNull`).
+- **Đã tự đổi so với yêu cầu gốc:** field trong draft schema của user dùng camelCase (`createdAt`, `sessionId`...) — đổi sang `snake_case` (`created_at`, `session_id`...) cho khớp convention đã có xuyên suốt toàn bộ `schema.prisma` (mọi model khác đều `snake_case`), tránh trộn 2 kiểu đặt tên trong cùng file. Role của message robot **vẫn dùng `"robot"`** (enum `ChatRole` cũ), không đổi thành `"assistant"` như câu chữ gốc của user — vì đổi enum sẽ không khớp toàn bộ data lịch sử đã lưu từ phiên 8 tới giờ; `"robot"` và `"assistant"` chỉ khác tên gọi, không khác ý nghĩa.
+
+**File mới:**
+- `src/lib/brain/session-context.ts` — `ensureSession(id)` (upsert `ConversationSession`, best-effort — id do client tự sinh nên chưa chắc có row DB tương ứng, phải tạo trước khi dùng làm khoá ngoại), `loadSessionHistoryText(id, limit=20)` (lấy N tin gần nhất, dựng lại thành text theo thứ tự thời gian), `countSessionMessages(id)` (cho debug panel).
+- `src/app/api/robot/transcribe/route.ts` — nhận `multipart/form-data` (`audio`, `language` optional mặc định `vi`), forward file lên OpenAI `/v1/audio/transcriptions` (model `OPENAI_TRANSCRIBE_MODEL`, mặc định code `gpt-4o-mini-transcribe`), timeout 20s, không log audio/API key. Trả `{ok, text, provider:"openai_transcribe"}` hoặc `{ok:false, text:"", error}`.
+  - **Bug phát hiện + tự sửa qua test tay:** ban đầu đặt cứng tên file gửi lên OpenAI là `"speech.webm"` bất kể định dạng thật — test bằng file mp3 thật (tạo từ chính `/api/robot/tts`) bị OpenAI trả `400` vì đuôi file không khớp nội dung (OpenAI dùng phần mở rộng để nhận diện codec). Fix: `resolveFilename()` ưu tiên tên file gốc nếu có đuôi hợp lệ, nếu không thì suy ra đuôi từ `Content-Type` thật (map `audio/webm→webm`, `audio/mp4→mp4`, `audio/mpeg→mp3`...). Đã test lại: transcribe đúng y nguyên text gốc ("Xin chào, tôi là robot Chin-Chin.") qua vòng TTS→STT thật. **Phía client** (`page.tsx`) cũng sửa tương tự — đặt tên blob theo `recorder.mimeType` thật thay vì cứng `.webm` (Safari có thể ghi `audio/mp4` thay vì webm).
+
+**Sửa `src/app/api/robot/chat/route.ts`:**
+- Schema thêm `sessionId`, `source` (`"voice"|"text"`, mặc định `"text"`), `sttMode`, `sttProvider`, `durationMs`, `confidence`.
+- `ensureSession()` trước khi dùng `sessionId` làm khoá ngoại; nếu tạo lỗi (DB down), coi như không có session — chat vẫn trả lời bình thường, chỉ mất phần nhớ ngữ cảnh (best-effort, đúng tinh thần "DB lỗi không crash" xuyên suốt project).
+- Load `loadSessionHistoryText()` → ghép với `SYSTEM_CONTEXT` qua `combineContext()`, cắt cứng ở **8000 ký tự tổng** (áp dụng ở đây, một chỗ duy nhất, cho cả nhánh OpenAI lẫn CLI agent — trước đó chỉ `openai-provider.ts` tự cắt, `cli-agent-router.ts` không cắt).
+- **Bỏ điều kiện `if (device)` khi lưu message** (khác thiết kế phiên 16-20): trước đây nếu `getRobotDevice()` thất bại thì KHÔNG lưu message nào cả; giờ luôn thử lưu (dùng `device?.id` — `undefined` nếu không có device), vì `session_id` giờ là khoá chính cho ngữ cảnh, không nên phụ thuộc vào việc tìm được device robot simulator hay không.
+- Message user lưu `metadata: {sttMode, durationMs, confidence, accessLevel}`; message robot lưu `metadata: {robot_say, face, action, latencyMs}`.
+- Response thêm `session_id`, `session_message_count` (đếm tổng tin trong session, cho debug panel), `latency_ms` (đo riêng thời gian gọi AI, không tính thời gian DB).
+
+**Sửa `/robot` (`page.tsx`) — Hands-free Voice Mode giờ có 2 chế độ STT:**
+- `sessionId` sinh 1 lần bằng `crypto.randomUUID()`, lưu `localStorage["robot_session_id"]`, đọc lại lúc mount (theo đúng pattern `useEffect` client-only đã dùng cho secure-context check, tránh lỗi SSR/hydration vì `localStorage` không tồn tại lúc server-render).
+- Nút chọn **OpenAI STT / Browser STT** trong card Hands-free (disable khi đang bật voice mode, tránh đổi mode giữa chừng). Mặc định `"openai"`.
+- `startHandsFreeListening()` giờ là dispatcher gọi `startBrowserListening()` (SpeechRecognition, logic y hệt phiên 19, đổi tên) hoặc `startOpenAiListening()` (mới).
+- **`startOpenAiListening()` — MediaRecorder + VAD tự viết (không thư viện ngoài):** dùng `AnalyserNode` (Web Audio API) đọc time-domain data mỗi `requestAnimationFrame`, tính độ lệch trung bình so với 128 làm "volume". Im lặng liên tục ≥ 1000ms (sau khi đã phát hiện có nói) → tự `recorder.stop()`; hoặc chạm trần 15s (an toàn, tránh thu âm vô hạn). `onstop`: nếu thời lượng < 500ms → coi như không có gì, nghe lại ngay, KHÔNG gọi transcribe API. Nếu đủ dài → gửi `/api/robot/transcribe`, kết quả đưa vào `runHandsFreeTurn()` y hệt nhánh browser.
+- Mic stream + `AudioContext`/`AnalyserNode` chỉ xin quyền **1 lần** lúc bấm "Bật hội thoại giọng nói" (`startVoiceMode`, mode `openai`), tái sử dụng cho mọi lượt ghi âm trong phiên — không xin quyền lại mỗi câu nói. Giải phóng đầy đủ (`releaseOpenAiMic()`: dừng recorder, đóng `AudioContext`, dừng track mic) khi tắt voice mode hoặc rời trang.
+- `canUseHandsFreeMic` tách riêng khỏi `canUseMic` cũ (vẫn dùng cho 2 nút mic thủ công ở khối Chat/Voice) — kiểm tra `mediaRecorderSupported` khi `sttMode==="openai"`, `sttSupported` khi `"browser"`.
+- **Debug panel nhỏ** (Mục tiêu 4, gộp vào cuối card Hands-free thay vì tạo card riêng): STT mode, Provider, Latency, Session (rút gọn 8 ký tự đầu), Saved (số tin đã lưu trong session), Last transcript.
+- `sendChatMessage()` (chat thủ công) cũng gửi kèm `sessionId`/`source:"text"` — nhớ ngữ cảnh áp dụng cho cả gõ tay, không chỉ voice.
+
+**Đã test qua curl thật (2 lượt liên tiếp cùng `sessionId`):** lượt 2 hỏi "Tao vừa nói tao là ai?" → robot trả lời đúng nhắc lại tên đã cho ở lượt 1 — xác nhận cơ chế nhớ ngữ cảnh hoạt động thật, không phải giả lập. `session_message_count` tăng đúng (2 → 4 → 6...) qua các lượt gọi. Query log xác nhận `ConversationSession`/`ConversationMessage` (kèm `source`/`metadata`/`session_id`) ghi đúng xuống Postgres thật.
+
+### RobotFace — mặt robot SVG/CSS animate thay emoji tĩnh (phiên 20 — 2026-07-05)
+
+Chỉ code — **không tạo ảnh, không dùng API tạo ảnh, không thư viện animation ngoài**. Component mới thuần Tailwind + inline SVG (kèm `<animate>` SVG gốc) + 1 CSS module nhỏ cho các hiệu ứng transform-based (thở, wave/nod, error pulse).
+
+**File mới:**
+- `src/components/robot/RobotFace.tsx` — component chính, export `RobotFace`, `RobotFaceExpr` (`"idle"|"happy"|"thinking"|"sad"|"speaking"|"listening"|"sleeping"|"error"`), `RobotGesture` (`"none"|"wave"|"nod"`).
+- `src/components/robot/RobotFace.module.css` — keyframes: `breathe` (thở nhẹ, luôn chạy), `wave`/`nod` (gesture nhất thời 0.9s rồi tự tắt), `errorRing` (viền đỏ pulse), `dot`/`sparkle`/`zFloat` (animation cho icon trán theo state).
+
+**Thiết kế mascot:** onigiri (cơm nắm) bo tròn — 1 path SVG hình tam giác bo góc (trắng ngà `#fbf6ec`, không dùng trắng thuần để đỡ gắt trên nền tối), dải "nori" (rong biển) đen quấn phần dưới đúng đặc trưng onigiri thật, 2 mắt lớn + đốm sáng nhỏ (sparkle) để có hồn, má hồng (`Cheeks`, sáng hơn khi happy), miệng đổi theo state. Toàn bộ vẽ tay bằng SVG path/ellipse, không phụ thuộc font emoji của hệ điều hành (khác bản cũ dùng emoji 🙂😄😮😴😲🤔 — vốn hiển thị khác nhau tuỳ OS/trình duyệt, không đồng nhất khi lên màn TFT sau này).
+
+**8 state, mỗi state có bộ mắt/miệng riêng (không morph 1 path chung — rõ ràng hơn khi đọc code, dễ chỉnh từng state độc lập):**
+- `idle` — mắt chớp tự nhiên qua SVG `<animate>` gốc trên `ry` (không cần JS/interval), miệng cong nhẹ.
+- `happy` — mắt cong hình `^_^` (path arc, không phải ellipse), miệng cười hở, má sáng hơn (opacity cao hơn), sparkle ✦ nhấp nháy góc trên phải.
+- `thinking` — mắt + đốm sáng trôi lên nhẹ (SVG `<animate>` trên `cy`/`cx`, mô phỏng "nhìn lên nghĩ ngợi"), 3 chấm nảy (CSS `dot` keyframe, so le `animation-delay`) phía trên đầu.
+- `listening` — mắt to hơn hẳn (rx/ry 14.5-15 so với 12.5-13 bình thường), vòng sóng mic lan toả từ đỉnh đầu (2 `<circle>` animate `r`+`opacity` lệch pha — hiệu ứng radar ping thuần SVG).
+- `speaking` — mắt idle bình thường, **miệng là điểm nhấn**: 1 `<ellipse>` animate `ry` liên tục (SVG `<animate>`, không cần JS) tạo cảm giác đang nói — chỉ render khi `expr === "speaking"`.
+- `sad` — mắt cụp (path mí mắt phủ lên trên ellipse), miệng cong xuống.
+- `sleeping` — mắt là 2 nét cong nhắm (không phải ellipse), chữ "Z"/"z" bay lên mờ dần lặp lại (CSS `zFloat`, so le `animation-delay`), miệng là 1 nét thẳng ngắn.
+- `error` — mắt tròn + 2 nét chân mày xếch lo lắng phía trên, miệng zigzag, **viền màn hình đỏ pulse** (CSS `errorRing` áp vào div ngoài cùng, không phải icon riêng).
+
+**Ưu tiên state (đúng yêu cầu, implement trong hàm `resolveExpr()`):** `isSpeaking` > `isListening` > `isThinking` > `face` (prop, mặc định `"idle"`). Field `face` từ `/api/robot/chat` (`reply-schema.ts`, chỉ có 4 giá trị `idle|happy|thinking|sad`) là tập con hợp lệ của 8 state RobotFace nên gán thẳng không cần map.
+
+**Gesture `action` (wave/nod):** hiệu ứng nhất thời chồng lên biểu cảm nền, không phải state riêng — `useEffect` lắng nghe prop `action` đổi giá trị (khác `"none"`), set 1 CSS class tạm (`gestureWave`/`gestureNod`) rồi tự clear qua `setTimeout` 900ms. **Hạn chế đã biết:** nếu 2 lượt chat liên tiếp cùng trả `action:"wave"`, `useEffect` (dependency `[action]`) không re-trigger vì giá trị không đổi — gesture thứ 2 sẽ không phát lại. Chấp nhận được cho MVP (gesture chỉ là hiệu ứng phụ, không phải thông tin quan trọng); muốn sửa triệt để cần backend gửi kèm 1 nonce/timestamp thay vì chỉ tên gesture.
+
+**Sửa `src/app/robot/page.tsx` — nối dữ liệu vào RobotFace:**
+- Thay khối `<div>` emoji + glow radial-gradient cũ bằng `<RobotFace face={robotFaceExpr} action={robotAction} isListening={...} isThinking={...} isSpeaking={isSpeaking} battery={state?.battery} className={...} />`.
+- Xoá `FACE_STYLE` map + biến `face`/`faceStyle` cũ (không còn dùng). Đổi tên type cục bộ `RobotFace` (union 6 giá trị của DB) → `DbRobotFace` để tránh đụng tên với component mới cùng tên import từ `@/components/robot/RobotFace`.
+- Thêm `mapDbFaceToExpr()` — map biểu cảm từ `RobotState` (DB, do nút lệnh Chào/Ngủ/Vui/Ngạc nhiên/Đang nghĩ cập nhật qua `/api/robot/command`) sang `RobotFaceExpr`. **Lưu ý:** DB có `"surprised"` nhưng RobotFace không có state riêng cho "ngạc nhiên" (đúng 8 state cố định theo yêu cầu) — map `surprised → happy` (biểu cảm tích cực gần nhất) thay vì `error` (dễ hiểu lầm là robot đang lỗi khi thực ra chỉ là 😲 vui vẻ).
+- 2 state mới `robotFaceExpr`/`robotAction` cập nhật từ **2 nguồn**: (1) `loadStatus()`/`sendCommand()` — qua `mapDbFaceToExpr(state.current_face)`, giữ nguyên hành vi cũ của các nút lệnh; (2) `sendChatMessage()`/`runHandsFreeTurn()` — thẳng từ `json.face`/`json.action` của response chat (đúng yêu cầu "response face/action từ /api/robot/chat => face/action" — **đây cũng chính là việc đã ghi nợ ở NEXT.md mục #0b từ phiên 19**, giờ coi như đã xong).
+- Thêm state `isSpeaking`, cập nhật trong `speak()` qua `utterance.onstart`/`onend`/`onerror` — áp dụng cho **mọi** lần gọi `speak()` (chat thủ công, hands-free, "Nói thử", greet, "Test âm thanh"), không chỉ riêng voice mode, nên miệng RobotFace tự động "nói" bất kể nguồn phát âm thanh nào. `interruptRobotSpeaking()` cũng chủ động `setIsSpeaking(false)` (phòng trường hợp `speechSynthesis.cancel()` không bắn `onend`/`onerror` trên một số trình duyệt).
+- `isListening`/`isThinking` truyền vào RobotFace là **OR** của 2 nguồn: mic thủ công (`isListening` state cũ) HOẶC hands-free (`voiceModeStatus === "listening"/"thinking"`), và `chatLoading` (chat thủ công đang gọi API) cho `isThinking`.
+
+**Responsive/kích thước:** `RobotFace` tự `aspect-square` (luôn vuông 1:1, sẵn sàng fit màn TFT vuông/tròn sau này theo đúng yêu cầu #9) — `className` truyền từ `page.tsx` chỉ set độ rộng (`w-56 sm:w-64 md:w-72`, hoặc `w-[min(70vw,70vh)]` khi fullscreen), không set aspect/height. `viewBox="0 0 200 200"` co giãn mượt mọi kích thước qua thuộc tính SVG chuẩn.
+
+**Không đổi:** `Badge` hiển thị `current_mode` vẫn giữ nguyên ngay dưới RobotFace (không phải một phần của component mới). Toàn bộ chat/voice mode/OpenAI provider không đụng tới — chỉ thêm 2 state mới (`robotFaceExpr`, `robotAction`) và 1 state (`isSpeaking`) nối vào luồng đã có sẵn.
+
+**Đã test:** `npm run build` pass, `/robot` trả 200, HTML chứa đúng SVG (`fbf6ec` nền cơm nắm, `232323` dải nori, text "IDLE"), `POST /api/robot/chat` test lại xác nhận backend không đổi (`face:"thinking"`, `action:"nod"` trả về đúng, sẽ hiển thị đúng qua RobotFace). **Chưa xem bằng mắt animation chạy mượt trên trình duyệt thật** (không cài Chromium/Playwright theo yêu cầu trước đó) — cần user tự mở `/robot`, thử các nút lệnh (Vui/Ngủ/Ngạc nhiên/Đang nghĩ) và hands-free voice mode để xác nhận mặt đổi biểu cảm mượt, miệng động khi nói.
+
+### Hands-free Voice Mode cho `/robot` (phiên 19 — 2026-07-05)
+
+Chỉ sửa `src/app/robot/page.tsx` (frontend thuần) — **không đổi API, không đổi schema**, dùng lại `POST /api/robot/chat` sẵn có. Không dùng OpenAI Realtime API, không dùng TTS API ngoài — chỉ `SpeechRecognition`/`webkitSpeechRecognition` (nghe) và `speechSynthesis` (nói), cả hai đều là Web API có sẵn trong trình duyệt.
+
+**Vòng lặp hội thoại:** bấm "🎙️ Bật hội thoại giọng nói" → recognition tự start → khi có **final transcript** (không rỗng, khác transcript vừa gửi lượt trước) → gọi `runHandsFreeTurn()` → `POST /api/robot/chat` → nhận `reply`/`robot_say` → `speak(robot_say)` → khi TTS xong, đợi cooldown 500ms → tự `startHandsFreeListening()` lại → lặp lại. Bấm "⏹ Tắt hội thoại giọng nói" để dừng hẳn (dừng recognition + cancel TTS + xoá timer chờ).
+
+**Tách hoàn toàn khỏi STT thủ công đã có** (nút mic ở khối Chat và khối Voice/Mic, dùng `recognitionRef`/`sttTargetRef`) — Hands-free dùng ref riêng (`handsFreeRecognitionRef`) để 2 cơ chế không tranh nhau 1 phiên ghi âm. Khi Hands-free đang bật, 2 nút mic thủ công tự động `disabled` (kèm title giải thích) để tránh 2 phiên `SpeechRecognition` chạy song song (hầu hết trình duyệt chỉ cho 1 phiên ghi âm active tại một thời điểm).
+
+**State machine (`voiceModeStatus`):** `"off" | "listening" | "thinking" | "speaking" | "paused" | "unsupported"` — hiện qua `Badge` ở góc card, label tiếng Việt qua `handsFreeStatusLabel()` (Đang nghe / Đang nghĩ / Đang nói / Tạm dừng / Mic không hỗ trợ).
+
+**Các cơ chế chống lỗi/vòng lặp hỏng:**
+- `lastSentTranscriptRef` — chặn gửi trùng transcript 2 lần liên tiếp (vd browser fire `onresult` final nhiều lần cho cùng 1 câu nói).
+- `turnInProgressRef` — cờ đánh dấu "đang xử lý 1 lượt" (từ lúc gửi API tới lúc TTS xong), để `recognition.onend`/`onerror` (bị trigger bởi chính `recognition.stop()` mà `onresult` gọi khi bắt được final transcript) **không** vô tình lên lịch nghe lại chồng lên lượt đang xử lý.
+- `recognition.onerror` phân biệt `"not-allowed"`/`"service-not-allowed"` (user từ chối quyền mic) → **tắt hẳn voice mode**, không lặp lại xin quyền vô tận; các lỗi khác (`"no-speech"`, `"aborted"`...) → tự nghe lại sau 300ms nếu voice mode còn bật.
+- API lỗi (network fail hoặc `ok:false`) trong `runHandsFreeTurn()` → robot nói cố định **"Tôi chưa xử lý được, thử lại nhé."** (đúng yêu cầu), rồi vẫn tiếp tục vòng lặp nghe lại bình thường — không bao giờ đứng im.
+- Cleanup khi unmount trang: dừng recognition + clear timer + cancel TTS (tránh mic/loa tiếp tục chạy ngầm sau khi rời `/robot`).
+
+**`speak()` mở rộng (không phá chỗ gọi cũ):** thêm tham số thứ 2 `onEnd?: () => void`, dùng để Hands-free biết chính xác lúc nào TTS đọc xong mà tự nghe lại (qua `utterance.onend`/`utterance.onerror`). Mọi chỗ gọi `speak(text)` cũ (greet, "Nói thử", "Test âm thanh", chat thủ công) không đổi vì tham số này optional.
+
+**UI:** thẻ mới "🗣️ Hội thoại giọng nói (Hands-free)" chèn giữa khối Chat và khối Voice/Mic cũ — 3 nút (Bật/Tắt/Ngắt lời robot — nút "Ngắt" chỉ enable khi đang ở trạng thái "speaking"), cảnh báo trình duyệt không hỗ trợ ("...dùng Chrome Android"), cảnh báo cần HTTPS (`https://os.irec.vn/robot`) nếu không phải secure context, và transcript thu gọn trong `<details>`/`<summary>` (mặc định đóng, bấm để xem — đúng yêu cầu "ẩn/thu nhỏ nhưng vẫn xem được nếu cần", dùng thẳng HTML `<details>` thay vì tự viết state toggle).
+
+**Không đổi:** `sendChatMessage()` (chat thủ công qua ô nhập text) giữ nguyên 100% hành vi cũ — Hands-free dùng hàm riêng `runHandsFreeTurn()` (có thêm cooldown-chain + fallback nói lỗi) thay vì gọi lại `sendChatMessage()`, chấp nhận trùng một phần logic (fetch + push message) để không rủi ro đổi hành vi chat cũ.
+
+**Đã test:** `npm run build` pass, `/robot` trả 200, HTML render đúng 3 label ("Hội thoại giọng nói (Hands-free)", "Bật hội thoại giọng nói", "Ngắt robot đang nói"), server log sạch không lỗi. `POST /api/robot/chat` test lại xác nhận không bị ảnh hưởng (`provider:"openai"` như trước). **Chưa test bằng mắt/tai thật trên trình duyệt có mic** (SpeechRecognition/speechSynthesis không thể test qua curl) — cần user tự thử trên Chrome/Chrome Android thật, đặc biệt qua `https://os.irec.vn/robot` một khi domain xong (mic cần secure context).
+
+### OpenAI làm provider chính (nhanh), CLI agent lùi thành chế độ `deep` (phiên 18 — 2026-07-05)
+
+Yêu cầu: user tự thêm `OPENAI_API_KEY`/`OPENAI_MODEL` thật vào `.env` — muốn robot chat trả lời **nhanh** bằng OpenAI làm mặc định, CLI agent (chậm, 25-60s) chỉ dùng khi chủ động yêu cầu qua `body.deep === true`.
+
+**File mới:**
+- `src/lib/brain/reply-schema.ts` — module dùng chung cho **mọi** nguồn trả lời (OpenAI, CLI agent, fallback): type `Face`/`Action`/`NormalizedReply`, hằng `FALLBACK_REPLY`, và các hàm `stripCodeFence()`/`extractJsonBlock()`/`truncateWords()`/`isFace()`/`isAction()`/`normalizeReply()`/`parseReplyJson()`. **Tách ra từ phiên này** — trước đó các hàm này định nghĩa riêng trong `cli-agent-router.ts`; giờ `cli-agent-router.ts` import lại từ đây (đã refactor, xoá code trùng), và `openai-provider.ts` dùng chung logic parse/validate JSON, đảm bảo 2 provider luôn xử lý JSON model trả về theo đúng 1 cách nhất quán.
+- `src/lib/brain/openai-provider.ts` — `askOpenAI(message, context?)`: gọi thẳng OpenAI Chat Completions API (`https://api.openai.com/v1/chat/completions`), model đọc từ `process.env.OPENAI_MODEL` (mặc định code `gpt-5.4-nano` nếu thiếu env), timeout 15s qua `AbortController`, context cắt cứng 8000 ký tự. **Không log/in `OPENAI_API_KEY` ở bất kỳ đâu** (kể cả trong `Error` message — chỉ dùng trong header `Authorization`, không bao giờ ghép vào chuỗi lỗi).
+  - **Bug phát hiện qua test tay:** prompt ban đầu (chỉ liệt kê quy tắc dạng prose, không kèm ví dụ JSON schema — đúng như yêu cầu gốc của user) khiến model **thường xuyên trả thiếu trường** (vd chỉ có `{"robot_say": "..."}`, thiếu hẳn `"reply"`) → `parseReplyJson()` trả `null` → toàn bộ request rơi xuống fallback dù OpenAI gọi thành công. Xác nhận qua `curl` trực tiếp tới OpenAI API (không qua app) với đúng model/key thật.
+  - **Fix:** thêm khối `Schema bắt buộc: {...}` tường minh vào system prompt (giống cách `cli-agent-router.ts` đã làm ở phiên 16) + `response_format: {type: "json_object"}` trong request body — đã test lại qua `curl` trực tiếp, model trả đủ 4 trường (`reply`, `robot_say`, `face`, `action`) đúng schema.
+
+**Sửa `src/lib/brain/cli-agent-router.ts`:** refactor dùng `reply-schema.ts` — xoá `stripCodeFence`/`extractJsonBlock`/`truncateWords`/`isFace`/`isAction`/`normalize` định nghĩa riêng (trùng lặp với OpenAI provider), `CliAgentResult` giờ là `NormalizedReply & {provider, errors}`, `FALLBACK_RESULT` build từ `FALLBACK_REPLY` dùng chung. Không đổi hành vi/luồng Codex→Claude→Gemini→fallback đã có từ phiên 16-17.
+
+**Sửa `src/app/api/robot/chat/route.ts`:**
+- Thêm `deep: z.boolean().optional()` vào schema body.
+- Hàm `resolveReply(userText, deep)`: nếu `deep` → gọi `askCliAgents()` (không đổi), map `provider` nội bộ (`codex_cli`/`claude_cli`/`gemini_cli`) thành `"cli_agent"` cho hợp đồng response bên ngoài (chỉ giữ 3 giá trị `"openai"|"cli_agent"|"fallback"` theo đúng yêu cầu) — chi tiết CLI nào thành công/lỗi **vẫn được giữ đầy đủ** trong `ActivityLog` (`log()`) qua field `error` (join các lỗi từng provider) dù không lộ ra ngoài response. Nếu không `deep` → gọi `askOpenAI()` trước, lỗi thì fallback local ngay (**không** rơi xuống CLI agent — đúng yêu cầu "không dùng CLI agent cho chat realtime mặc định vì chậm").
+- Response contract đổi từ `errors: string[]` (phiên 16-17) → `error: string | null` (số ít, đúng yêu cầu lần này) — đơn giản hơn, đủ dùng vì giờ chỉ có 1 nhánh chạy tại 1 thời điểm (không phải chain nhiều lỗi tích luỹ như CLI router nội bộ).
+- Giữ nguyên toàn bộ phần best-effort DB (không crash nếu Postgres lỗi) và input linh hoạt `message`/`text`/`content`, `accessLevel` mặc định 3 (giữ trong schema, chưa dùng để lọc context) từ phiên 15-16.
+
+**Sửa UI `/robot` (tối thiểu, không đổi bố cục):**
+- `providerLabel()`: `"openai"` → "OpenAI", `"cli_agent"` → "CLI Agent (Codex/Claude/Gemini)", `"fallback"` → "Fallback (chế độ cơ bản)" — bỏ 3 case cũ `codex_cli`/`claude_cli`/`gemini_cli` (không còn xuất hiện ở response ngoài, đã collapse thành `cli_agent` trong route).
+- `ChatResponse`/`ChatMessage`: đổi field `errors?: string[]` → `error?: string | null`, cảnh báo fallback đổi text thành "Chưa gọi được AI thật, đang dùng chế độ cơ bản" (chung cho cả 2 nhánh openai/CLI, không còn nói riêng "3 CLI agent" vì giờ có thể fail ngay từ nhánh OpenAI).
+- `speak()` vẫn đọc `robot_say` (giữ từ phiên 16), không đổi.
+
+**Đã test qua curl thật:**
+- Mặc định (không `deep`): `provider:"openai"`, có `reply`/`robot_say`, **~5s** (so với 30-60s của CLI agent) — đúng yêu cầu "trả lời nhanh".
+- `{"deep":true}`: `provider:"cli_agent"` (qua Claude CLI, Codex CLI vẫn timeout 25s do chưa login — xem phiên 17), `error` ghi rõ `"codex_cli: timeout sau 25s"` — xác nhận nhánh CLI vẫn hoạt động đúng qua field `deep`.
+- `/robot` vẫn trả 200. `npm run build` pass.
+
+### Wrapper cố định env cho CLI agent + phát hiện auth thật (phiên 17 — 2026-07-05)
+
+Bug report: user gọi `codex`/`gemini` thủ công trên VPS được, nhưng nghi ngờ `/api/robot/chat` (gọi từ tiến trình Next.js) có thể fail vì process env khác terminal (thiếu `PATH` của nvm, thiếu `HOME`, v.v.).
+
+**Wrapper mới (không phải file trong repo — nằm ở `/usr/local/bin`, ngoài git):**
+- `/usr/local/bin/brainos-codex` — set cứng `HOME=/root`, `PATH=...` (bao gồm `/root/.nvm/versions/node/v22.23.0/bin`), `TERM=dumb`, `NO_COLOR=1`, `cd /home/brainos/agent-workspace`, rồi `exec codex exec --skip-git-repo-check "$@"`.
+- `/usr/local/bin/brainos-gemini` — tương tự, `exec gemini -p "$@" --skip-trust`.
+- **Đã sửa 1 chỗ so với yêu cầu gốc của user:** PATH mẫu user đưa (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.npm-global/bin`) **thiếu thư mục nvm** (`/root/.nvm/versions/node/v22.23.0/bin`) — đây là nơi `codex`/`gemini`/`claude` thực sự nằm (symlink, xác nhận qua `which`/`readlink -f`), và `/root/.npm-global/bin` **không tồn tại** trên máy này. Nếu dùng đúng PATH mẫu, wrapper sẽ báo "command not found" 100% các lần — đã tự sửa PATH cho đúng thay vì copy nguyên văn.
+- **Giữ cứng flag trust/skip-check ngay trong wrapper** (không phải trong router) — vì router giờ chỉ gọi `brainos-codex "<prompt>"` với đúng 1 tham số theo yêu cầu, nên `--skip-git-repo-check`/`--skip-trust` phải nằm trong wrapper để không bị mất.
+
+**Sửa `src/lib/brain/cli-agent-router.ts`:**
+- `PROVIDERS`: `codex_cli` và `gemini_cli` giờ gọi `/usr/local/bin/brainos-codex`/`brainos-gemini` (đường dẫn tuyệt đối) với `buildArgs: (prompt) => [prompt]` — wrapper tự lo phần flag/cwd/env. `claude_cli` vẫn gọi thẳng `claude -p "<prompt>"` (không cần wrapper, không có yêu cầu trust-dir, đã chạy ổn định qua PATH kế thừa).
+- Thêm `FIXED_ENV` — set cứng `HOME`/`PATH`/`TERM`/`NO_COLOR` (giống wrapper) truyền qua `env` option của `execFile()` cho **cả 3 provider** (không chỉ Codex/Gemini) — đảm bảo môi trường chạy CLI luôn xác định, không phụ thuộc `process.env` kế thừa từ tiến trình Next.js. Có thêm `NODE_ENV: process.env.NODE_ENV` (bắt buộc vì type `NodeJS.ProcessEnv` của Next.js yêu cầu field này, không ảnh hưởng gì tới 3 CLI).
+- Giữ nguyên toàn bộ cơ chế timeout 25s/CLI + tổng 60s/route + đóng stdin ngay (EOF) đã có từ phiên 16.
+
+**Đã test wrapper độc lập (mô phỏng đúng lo ngại của user — process env "sạch" như tiến trình khác terminal):**
+```bash
+env -i PATH=/usr/bin:/bin HOME=/tmp /usr/local/bin/brainos-codex "..."   # OK, tìm thấy lệnh, chạy đúng cwd
+env -i PATH=/usr/bin:/bin HOME=/tmp /usr/local/bin/brainos-gemini "..."  # OK, tìm thấy lệnh, chạy đúng cwd
+```
+→ Xác nhận wrapper **giải quyết đúng vấn đề PATH/HOME** mà user lo ngại — không còn lỗi "command not found" hay "not inside a trusted directory" dù env bị strip sạch.
+
+**Phát hiện quan trọng (không phải lỗi env/PATH — báo lại user, không tự ý login lại theo đúng yêu cầu):**
+- `codex login status` → **"Not logged in"**. Nguyên nhân: ở phiên trước, Codex CLI có token đã hết hạn (refresh thất bại, 401) nhưng `codex login status` vẫn báo "Logged in using ChatGPT" (chỉ kiểm tra file token tồn tại, không kiểm tra còn hạn); phiên trước đã thử `codex login --device-auth` để sửa nhưng mã hết hạn/bị ngắt trước khi hoàn tất, khiến trạng thái chuyển từ "có token hỏng" sang "không có token nào". **Cần user tự chạy `codex login` (hoặc `codex login --device-auth` nếu VPS không có trình duyệt) và hoàn tất trong 15 phút.**
+- `~/.gemini/settings.json` → `{"security":{"auth":{"selectedType":"gemini-api-key"}}}` — Gemini CLI trên VPS này **đang cấu hình xác thực bằng API key**, không phải OAuth login tài khoản Google. Nghĩa là "Gemini CLI" ở đây về bản chất vẫn cần một API key hợp lệ để chạy — key hiện tại (trong `~/.bashrc`, đã biết từ phiên 14-15) không hợp lệ/hết quota. Muốn Gemini CLI thật sự hoạt động theo đúng tinh thần "CLI đã login, không dùng API key trả phí", cần user tự chạy `gemini` (interactive) và chọn phương thức đăng nhập "Login with Google" thay vì API key.
+- **Chỉ Claude CLI hoạt động thật** trên VPS này hiện tại — đã xác nhận nhiều lần qua test.
+
+**Đã test qua curl thật** (`--max-time 70`): tổng ~38s (Codex CLI chạm timeout 25s do vòng lặp reconnect WebSocket 401 thật, Claude CLI trả lời thành công ~10s ngay sau), `provider:"claude_cli"`, `errors:["codex_cli: timeout sau 25s"]`. `/robot` vẫn trả 200. `npm run build` pass.
+
+**"AgentRun ghi provider success/fail":** không tạo endpoint `/agents` mới (không có yêu cầu file cụ thể, tránh thêm module ngoài scope) — dùng lại cơ chế đã có: mảng `errors[]` trong response (ghi rõ provider nào lỗi + lý do) và `ActivityLog` (`action: "robot.chat"`, payload chứa `provider` thành công + toàn bộ `errors[]`) qua `log()` trong route — đã đủ để trả lời "provider nào success/fail" mà không cần thêm route/schema mới.
+
+### CLI Agent Router — bỏ OpenAI/Gemini API trả phí, dùng Codex/Claude/Gemini CLI (phiên 16 — 2026-07-05)
+
+Yêu cầu: `/api/robot/chat` không được gọi bất kỳ paid model API nào (không OpenAI API, không Gemini API key) — thay vào đó dùng 3 CLI agent **đã login sẵn trên VPS** (Codex CLI, Claude CLI, Gemini CLI), chạy trong workspace cô lập, không được đụng vào repo chính.
+
+**File mới:**
+- `src/lib/brain/system-context.ts` — hằng số `SYSTEM_CONTEXT`, mô tả tĩnh về Brain OS/robot ChinChin, gửi kèm mọi request tới CLI (thay cho context động truy vấn DB như kiến trúc AI Provider cũ ở phiên 13).
+- `src/lib/brain/cli-agent-router.ts` — `askCliAgents(message, context)`: chạy tuần tự Codex CLI → Claude CLI → Gemini CLI → fallback local. Chi tiết quan trọng:
+  - **Workspace cô lập:** `/home/brainos/agent-workspace` (tự `mkdir -p` nếu chưa có) — mọi CLI chạy với `cwd` này, không phải thư mục repo (`/root/brain-os`), nên dù CLI có cố sửa file cũng không đụng được vào code thật.
+  - **Timeout 2 lớp (sửa lại trong cùng phiên sau khi phát hiện demo bị treo quá lâu):** ban đầu để 90s/CLI theo yêu cầu gốc, nhưng test thật cho thấy tổng thời gian có thể lên tới ~110s (Codex timeout 90s + Claude ~10s) — quá lâu cho demo. Đã giảm còn **25s/provider** (`PER_PROVIDER_TIMEOUT_MS`), và thêm **trần tổng 60s cho cả route** (`TOTAL_TIMEOUT_MS`): thời gian còn lại co dần cho provider sau (provider cuối có thể nhận ít hơn 25s nếu provider trước đã dùng gần hết ngân sách), dưới 3s thì bỏ qua thẳng provider đó. Có thêm một `Promise.race` với deadline tổng làm lưới an toàn — đảm bảo response luôn về trong ~60.5s dù cơ chế timeout của `execFile` vì lý do gì đó không kích hoạt kịp.
+  - **Bắt buộc thêm flag trust/skip-check** mà yêu cầu gốc không đề cập, phát hiện qua test tay: `codex exec` cần `--skip-git-repo-check` (mặc định từ chối chạy ngoài git repo/thư mục chưa trust), `gemini -p` cần `--skip-trust` (mặc định từ chối chạy headless trong thư mục chưa trust tương tác) — thiếu 2 flag này, CLI in lỗi trust rồi thoát ngay, sẽ luôn bị coi là lỗi dù CLI vẫn hoạt động bình thường.
+  - **Bug đã sửa — stdin treo hết timeout:** ban đầu dùng `util.promisify(execFile)`, để `stdio` mặc định (pipe mở, không đóng). Codex CLI đọc thêm dữ liệu từ stdin dù đã có prompt dạng argument ("Reading additional input from stdin...") — pipe không đóng khiến Codex treo tới hết timeout thay vì tự thoát lỗi sau ~20s như khi test tay với `< /dev/null`. Fix: chuyển sang `execFile` dạng callback thường (không promisify) để lấy được `ChildProcess`, gọi `child.stdin?.end()` ngay sau khi spawn để đóng stdin (EOF) tức thì.
+  - **Parse JSON an toàn:** `stripCodeFence()` bỏ ```` ```json ... ``` ```` nếu CLI lỡ bọc markdown; `extractJsonBlock()` cắt lấy đúng khối `{...}` ngoài cùng nếu CLI in thêm chữ thừa trước/sau JSON.
+  - **Validate nhẹ tay:** chỉ `reply` rỗng mới bị coi là lỗi cứng (loại bỏ kết quả, thử provider tiếp theo) — `face`/`action` sai giá trị tự về `"idle"`/`"none"`, `robot_say` thiếu thì lấy từ `reply`, và luôn bị cắt về tối đa 18 từ (`truncateWords`) thay vì từ chối cả câu trả lời tốt chỉ vì hơi dài.
+  - **Lỗi luôn có tên provider đứng đầu** trong mảng `errors` (vd: `"codex_cli: timeout sau 25s"`, `"gemini_cli: lệnh không tồn tại"`) — dùng `describeError()` rút gọn về 1 dòng (ưu tiên `stderr`, cắt 200 ký tự, bỏ xuống dòng) thay vì để nguyên `error.message` của `execFile` (chứa lại toàn bộ command + prompt dài, không hữu ích khi log/hiển thị).
+- **Đã phát hiện khi test (quan trọng, báo lại user):** trên VPS này, **Codex CLI và Gemini CLI đang hết hạn đăng nhập** (`codex exec` → `401 Invalid refresh token`; `gemini -p` → `401 UNAUTHENTICATED`) — chỉ **Claude CLI hoạt động bình thường**. Router vẫn hoạt động đúng thiết kế (tự fallback qua Claude CLI, ghi rõ lỗi 2 provider kia), nhưng nếu muốn thật sự có 3 lớp dự phòng, cần đăng nhập lại `codex login` và `gemini` (interactive) trên VPS — ngoài phạm vi việc này vì cần thao tác tương tác/trình duyệt mà agent không tự làm thay được.
+
+**Sửa `src/app/api/robot/chat/route.ts`:**
+- Bỏ hoàn toàn import `@/lib/ai` (kiến trúc OpenAI/Gemini API cũ) — gọi `askCliAgents(userText, SYSTEM_CONTEXT)` thay thế.
+- Giữ nguyên input linh hoạt `message`/`text`/`content` và `deviceId`/`accessLevel` (mặc định 3) từ phiên 15 — `accessLevel` hiện chưa được CLI router dùng tới (context giờ tĩnh, không lọc theo access_level) nhưng vẫn giữ trong schema để tương thích API/auth thật sau này.
+- **DB best-effort thật sự:** tra `device` + lưu `ConversationMessage` (user và robot) đều bọc `try/catch` riêng — nếu Postgres lỗi, chat vẫn trả lời bình thường qua CLI agent, chỉ mất phần lưu lịch sử (trước đây ở phiên 15 nếu `getRobotDevice` throw sẽ làm hỏng cả request).
+- Response luôn đúng dạng `{ok:true, reply, robot_say, face, action, provider, errors, ...ids}` — bỏ các field cũ `context_used`/`openai_error`/`gemini_error` (không còn ý nghĩa với kiến trúc CLI).
+
+**Sửa UI `/robot` (`src/app/robot/page.tsx`, tối thiểu, không đổi bố cục):**
+- TTS giờ đọc `robot_say` (câu ngắn ≤18 từ) thay vì `reply` (câu đầy đủ hiển thị trong bong bóng chat) — đúng yêu cầu tách nội dung web/tablet đọc to.
+- `providerLabel()`: `"codex_cli"` → "Codex CLI", `"claude_cli"` → "Claude CLI", `"gemini_cli"` → "Gemini CLI", `"fallback"` → "Fallback (chế độ cơ bản)".
+- Cảnh báo nhẹ khi `provider === "fallback"`: hiện dòng "⚠️ Cả 3 CLI agent đều không trả lời được..." kèm danh sách lỗi rút gọn.
+- `face`/`action` CLI trả về **chưa được wire vào trạng thái robot thật** (emoji/mode hiện tại vẫn điều khiển qua `/api/robot/command` riêng) — chỉ mới hiển thị qua provider label, để dành làm việc sau nếu cần robot tự đổi mặt theo câu trả lời chat.
+
+**Dọn dẹp:** xoá toàn bộ `src/lib/ai/` (kiến trúc OpenAI/Gemini API phiên 13-15, không còn file nào import tới) và xoá `OPENAI_API_KEY`/`OPENAI_MODEL`/`GEMINI_API_KEY`/`GEMINI_MODEL` khỏi `.env` (không còn ai đọc).
+
+**Đã test qua curl thật** (`{"message":"Chào khách đến mua cơm nắm ChinChin","accessLevel":3}`, `--max-time 70`): tổng ~32s (Codex thoát lỗi auth thật ~22s, Claude trả lời thành công ~10s), `provider:"claude_cli"`, `robot_say` ≤18 từ, `face:"happy"`, `action:"wave"`, `errors` ghi rõ `"codex_cli: ... Failed to refresh token: 401 Unauthorized..."`. `npm run build` pass sau mọi thay đổi.
+
+### Fix kết nối Postgres + payload chat linh hoạt (phiên 15 — 2026-07-05)
+
+Bug report: `/api/robot/chat` lỗi `Authentication failed against database server at localhost, credentials for postgres are not valid.` — xác nhận đây là lỗi Postgres, không phải Gemini.
+
+- **Nguyên nhân:** container `brainos-postgres` vẫn chạy (uptime 20h, env `POSTGRES_PASSWORD=postgres` khớp `.env`), nhưng **password thật đã lưu trong volume của DB không còn khớp** `postgres` nữa — do image Postgres chỉ áp dụng `POSTGRES_PASSWORD` lúc **khởi tạo lần đầu** volume; nếu container từng bị tạo lại (hoặc password bị đổi tay) trong khi volume dữ liệu cũ được giữ lại, env var mới không tự động cập nhật lại password đã lưu. `pg_hba.conf` chỉ `trust` cho `127.0.0.1`/`::1` bên trong container — mọi kết nối từ ngoài (kể cả app Next.js chạy trên host) đi qua `scram-sha-256` nên bị từ chối.
+- **Đã kiểm tra trước khi sửa:** volume `fa53b859b1...` có data thật (1 Profile, 2 Memory, 36 ConversationMessage, 6 Device) — **đã hỏi user** trước khi động vào, chọn phương án **giữ data** thay vì recreate container.
+- **Fix:** `docker exec brainos-postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';"` — đổi password role ngay trong container hiện tại, khớp lại với `DATABASE_URL` trong `.env`, **không mất data, không cần recreate container**.
+- Verify: `npx prisma generate` + `npx prisma migrate status` → "Database schema is up to date!" (3 migration, không cần chạy lại `migrate dev`/`db:seed` vì schema/data đã có sẵn và khớp).
+- **`/api/robot/chat` — payload linh hoạt:** trước đây chỉ nhận `{text}`, giờ nhận `message` **hoặc** `text` **hoặc** `content` (ưu tiên theo thứ tự đó). Thiếu cả 3 → trả `400 {ok:false, error:"Thiếu nội dung tin nhắn..."}` thay vì lỗi Zod chung chung. Body không phải JSON hợp lệ → bắt riêng, trả `400` rõ ràng thay vì rơi xuống lỗi 500 chung.
+- **`deviceId`** (hoặc `device_id`) optional, mặc định `"dev-robot-simulator"` — `getRobotDevice()` (`src/lib/robot.ts`) giờ nhận thêm tham số `deviceId` optional, tra theo `id` nếu có truyền, giữ nguyên hành vi cũ (tìm theo `device_type: "robot"`) nếu không truyền.
+- **`accessLevel`** (hoặc `access_level`) optional, mặc định đổi từ hardcode `1` → `3` theo yêu cầu (route giờ là kênh chat chính chủ, không phải public endpoint chưa auth) — validate `int 0..4` qua Zod. **Lưu ý bảo mật:** vì chưa có auth thật, bất kỳ ai gọi được endpoint này đều có thể tự truyền `accessLevel: 3` và đọc được `PrivateMemory` qua context — chấp nhận được cho MVP chạy local/tin cậy, nhưng **phải thêm auth trước khi expose endpoint ra ngoài** (xem Known issues).
+- Đã test qua curl thật: `message`/`text`/`content` đều hoạt động, thiếu cả 3 trả 400 đúng, JSON không hợp lệ trả 400 đúng, response luôn là JSON kể cả khi lỗi. Gemini hiện trả `401` (không phải 429) — do `GEMINI_API_KEY` trong `~/.bashrc` (khác key trong `.env`, override theo cơ chế đã ghi ở phiên 14) có vẻ không hợp lệ; cơ chế fallback (không phân biệt 401/429/timeout, đều fallback về template) đã xử lý đúng, **không crash, luôn trả JSON** — không đụng vào phần Gemini vì đây là vấn đề key/quota đã biết từ trước (xem NEXT.md), ngoài phạm vi yêu cầu lần này.
+- App đã restart lại (`pkill -f "next dev"` rồi `nohup npm run dev -- -H 0.0.0.0 -p 3000 > brainos.log 2>&1 &`), log sạch, không còn lỗi Prisma authentication.
+
+### Chống Gemini 429 (phiên 14 — 2026-07-04) — ĐÃ THAY THẾ ở phiên 16
+
+> **Toàn bộ `src/lib/ai/` mô tả trong section này đã bị xoá ở phiên 16** (2026-07-05) — robot chat không còn gọi OpenAI/Gemini API trả phí, chuyển sang CLI Agent Router (Codex/Claude/Gemini CLI). Giữ lại nội dung dưới đây làm lịch sử/tham khảo kiến trúc cũ.
 
 Chỉ sửa `src/lib/ai/` — không đổi schema, không đổi API contract chính (chỉ mở rộng thêm giá trị `provider`).
 
@@ -110,7 +363,9 @@ Chỉ sửa `src/lib/ai/` — không đổi schema, không đổi API contract c
   2. Gọi chat lần 2 ngay sau đó → **không gọi lại Gemini** (cooldown), response `gemini_error: "Gemini đang cooldown sau lỗi 429, còn 60s"`.
   3. Đợi đủ 62s, gọi lại → hệ thống **tự động thử lại Gemini** (không kẹt ở thông báo cooldown cũ), nhận 429 mới thật từ API, kích hoạt lại cooldown mới — xác nhận đúng vòng đời cooldown hoạt động chính xác.
 
-### Gemini AI Provider cho Robot Chat (phiên 13 — 2026-07-04)
+### Gemini AI Provider cho Robot Chat (phiên 13 — 2026-07-04) — ĐÃ THAY THẾ ở phiên 16
+
+> **Đã xoá ở phiên 16** (2026-07-05), xem lý do ở ghi chú tương tự tại section "Chống Gemini 429" ngay trên.
 
 Nâng cấp kiến trúc AI provider đã có từ phiên 8 lên đúng cấu trúc/hợp đồng được yêu cầu chi tiết, **không đổi schema** (field `provider` trên `ConversationMessage` vốn đã là `String?`, chỉ đổi giá trị lưu vào đó).
 
@@ -234,6 +489,127 @@ Nâng cấp kiến trúc AI provider đã có từ phiên 8 lên đúng cấu tr
 - [x] Tailwind dark theme (surface/accent/zinc palette)
 - [x] BRAIN_SPEC.md, STATE.md, NEXT.md
 
+### Xiaozi/Xiaozhi Bridge — kiến trúc template-first (phiên 24 — 2026-07-05)
+
+Yêu cầu: Xiaozi/Xiaozhi (phần cứng robot khác) đã có sẵn voice/mic/STT/TTS/template/skill/phản xạ cơ bản — Brain OS **không tự build lại** các phần đó, chỉ đóng vai trò webhook backend cho Xiaozi: nhận câu Xiaozi không tự trả lời được, lưu hội thoại/log, quản lý memory/profile/project, xử lý câu liên quan Brain OS/ChinChin/iREC, và chỉ gọi OpenAI khi câu thật sự phức tạp. `/robot` (route `/api/robot/chat` và mọi thứ liên quan — session-context, openai-provider, cli-agent-router, RobotFace, RobotVision...) **giữ nguyên 100%, không đụng** — giờ coi `/robot` vừa là simulator vừa là nơi admin xem/test Xiaozi Bridge.
+
+**Kiến trúc 3 lớp (ưu tiên từ trên xuống, dừng ở lớp đầu tiên xử lý được):**
+- **L0 — Xiaozi built-in:** template/skill có sẵn trên chính thiết bị Xiaozi (kể chuyện, thời tiết, trò chuyện phổ thông...) — Brain OS không biết và không cần biết các case này tồn tại, chỉ nhận request khi Xiaozi tự quyết định "câu này template không xử lý được".
+- **L1 — Brain OS local bridge (`xiaoziBridgeBrain()`):** xử lý nội bộ, không gọi AI ngoài, tốc độ tức thời (~40-50ms qua test). Chỉ 5 nhóm cố định: (1) "Brain OS là gì", (2) ChinChin/iREC (menu/giá cố định), (3) memory/session (ghi nhớ, "tao vừa nói gì" — dùng `previousUserText` lấy từ `ConversationMessage` cùng `session_id`), (4) lệnh robot cơ bản (ngủ/vui/nhìn trái-phải/gật đầu → map `face`/`action`), (5) dashboard/status (hỏi đang dùng "não" nào). Không thuộc nhóm nào → `matched:false`, để route quyết định tiếp.
+- **L2 — OpenAI fallback:** **chỉ** gọi khi `isComplexRequest(text)` (`src/lib/brain/complexity.ts`, kiểm tra ~18 cụm từ khoá như "phân tích", "chiến lược", "lập kế hoạch", "tính toán chi phí", "hỏi não"...) trả `true` **và** `ENABLE_OPENAI_FALLBACK=true`. Nếu phức tạp nhưng OpenAI đang tắt → trả lời cố định "Việc này cần não nâng cao, hiện tôi chưa bật OpenAI." (`provider:"fallback_complex_disabled"`), không im lặng, không giả vờ trả lời được.
+
+**Thứ tự check quan trọng (bug tự phát hiện + tự sửa qua test tay):** ban đầu implement theo đúng thứ tự literal của yêu cầu (bridge nội bộ chạy trước, complexity-check chạy sau khi bridge báo `matched:false`) — test câu "phân tích chiến lược mở rộng ChinChin lên 20 điểm bán" bị nhóm (2) ChinChin/iREC "cướp" mất (vì câu có chứa từ "chinchin"), trả về menu/giá thay vì đi tới nhánh phức tạp. **Fix:** `xiaoziBridgeBrain()` giờ check `isComplexRequest()` **đầu tiên** — nếu phức tạp, trả `matched:false` ngay, bỏ qua toàn bộ 5 nhóm quick-reply, để route xử lý nhánh OpenAI/fallback. Đã test lại xác nhận đúng.
+
+**ENV mới (`.env`):**
+```
+AI_PROVIDER="local"              # chỉ mang tính mô tả/hiển thị ở panel debug, không tự đổi luồng gọi OpenAI
+ENABLE_OPENAI_FALLBACK="false"   # true mới cho phép gọi OpenAI ở nhánh L2
+OPENAI_ONLY_FOR_COMPLEX="true"   # mang tính chủ đích/hiển thị — hiện luồng thực tế LUÔN chỉ gọi OpenAI khi complex=true (không có nhánh "gọi OpenAI cho câu không phức tạp"), nên cờ này chưa có switch riêng
+```
+MVP chạy đầy đủ không cần `OPENAI_API_KEY` (dù key thật vẫn có sẵn trong `.env` từ phiên 18, dùng chung cho `/api/robot/chat`) — mặc định `ENABLE_OPENAI_FALLBACK=false` nên nhánh L2 không bao giờ được gọi tới trừ khi bật tay.
+
+**File mới:**
+- `src/lib/brain/complexity.ts` — `isComplexRequest(text)`, so khớp substring (lowercase) với danh sách từ khoá cố định.
+- `src/lib/brain/xiaozi-bridge-brain.ts` — `xiaoziBridgeBrain(input)`, hàm thuần (không async, không đọc DB trực tiếp — route tự truy vấn `previousUserText` rồi truyền qua `meta` trước khi gọi).
+- `src/app/api/xiaozi/chat/route.ts` — webhook chính. Input linh hoạt (`text`/`message`, `deviceId` mặc định `"xiaozi-robot-1"`, `sessionId` mặc định `"xiaozi-" + deviceId`, `accessLevel` mặc định `3`). Lưu `ConversationMessage` cả lượt user (`source:"xiaozi"`, `provider:"xiaozi"`) lẫn robot (mọi nhánh, `provider` phản ánh đúng nguồn: `brain_local`/`openai`/`fallback`/`fallback_complex_disabled`/`xiaozi_template_first`) — **best-effort, DB lỗi không crash** (dùng lại pattern try/catch nuốt lỗi đã có từ `/api/robot/chat`). Không log API key ở bất kỳ đâu (lỗi OpenAI chỉ ghi message ngắn vào `ActivityLog`, không kèm key).
+- `src/app/api/xiaozi/status/route.ts` — GET nhỏ, chỉ trả cấu hình không nhạy cảm (`aiProvider`, `enableOpenaiFallback`, `openaiOnlyForComplex`, `sampleDeviceId`, `endpointPath`) cho panel debug.
+- `src/components/robot/XiaoziBridgePanel.tsx` — panel mới chèn vào đầu `/robot` (trước card "Điều khiển"), hiển thị endpoint (`https://os.irec.vn/api/xiaozi/chat`), giá trị 3 env, `deviceId` mẫu, 2 khối curl mẫu (local/complex), và 3 nút test nhanh (local/complex/template-first) gọi thẳng `/api/xiaozi/chat` từ trình duyệt, hiện `provider` + `speak` + latency của lần test gần nhất.
+
+**Đã test qua curl thật (server dev thật, port 3000, DB Postgres thật):**
+- `{"text":"Brain OS là gì",...}` → `provider:"brain_local"`, đúng câu trả lời cố định.
+- `{"text":"kể chuyện cười đi",...}` → `provider:"xiaozi_template_first"`, không gọi OpenAI.
+- `{"text":"phân tích chiến lược mở rộng ChinChin lên 20 điểm bán",...}` với `ENABLE_OPENAI_FALLBACK=false` → `provider:"fallback_complex_disabled"`; bật tạm `ENABLE_OPENAI_FALLBACK=true` → `provider:"openai"` (trả lời thật, ~2s), rồi tắt lại đúng mặc định `false`.
+- `{"text":"ngủ đi",...}` → `action:"sleep"`; `{"text":"nhớ tao là Tú nhé","sessionId":"sess-test-1",...}` rồi `{"text":"tao vừa nói gì","sessionId":"sess-test-1",...}` → trả đúng lại câu vừa lưu, xác nhận truy vấn `previousUserText` theo `session_id` hoạt động.
+- `GET /api/xiaozi/status` → đúng JSON config, không lộ `OPENAI_API_KEY`. `/robot` vẫn 200, panel "🔌 Xiaozi Bridge" xuất hiện đúng vị trí. `npm run build` pass (cả ở worktree cô lập lẫn ở checkout chính sau khi đồng bộ).
+
+**Sự cố hạ tầng phát hiện + tự sửa (không liên quan code Xiaozi, nhưng chặn việc test):** container Postgres `brainos-postgres` (docker, đã chạy 27h) **không còn database `brain_os`** (chỉ còn `postgres`/`readme_to_recover`/`template0`/`template1`) — không rõ nguyên nhân (ngoài phạm vi phiên này để điều tra). Đã tự `CREATE DATABASE brain_os`, chạy lại `prisma migrate deploy` (4 migration cũ, không đổi schema) + `npm run db:seed`. **Hệ quả: toàn bộ `ConversationMessage`/`ActivityLog`/dữ liệu thật đã tích luỹ qua các phiên trước (21-23) đã mất**, giờ chỉ còn dữ liệu mẫu từ `prisma/seed.ts`. Nếu có bản backup Postgres riêng, cần restore thủ công; nếu không, coi như bắt đầu lại từ seed.
+
+**Không đụng:** NPM/Cloudflare (đúng yêu cầu), `/api/robot/*` và mọi thứ trong `src/lib/brain/` từ phiên 16-23 (chỉ *thêm* file mới, không sửa file cũ nào ngoại trừ `.env` thêm 3 dòng và `src/app/robot/page.tsx` thêm 1 import + 1 dòng render panel).
+
+### Postgres persistence — named volume + backup + health check (phiên 25 — 2026-07-05)
+
+Yêu cầu: sự cố mất DB `brain_os` ở phiên 24 (nguyên nhân: container `brainos-postgres` chạy trên **volume ẩn danh**, dễ mất data nếu container bị xoá/tạo lại chứ không chỉ restart) — cần cố định bằng named volume + backup + health check, không phá code Xiaozi Bridge.
+
+**Hiện trạng trước khi sửa (đã kiểm tra bằng `docker inspect`):** `brainos-postgres` mount `Type: volume` nhưng `Name` là 1 chuỗi hash dài (volume ẩn danh Docker tự sinh khi không khai `-v name:path` hay compose) — xác nhận đúng nghi vấn ở NEXT.md phiên trước. DB đang có 24 `ConversationMessage`/3 `ConversationSession` (dữ liệu test từ phiên 24, không phải data thật cũ đã mất).
+
+**Backup trước khi động vào gì (2 lần, để chắc):** `docker exec brainos-postgres pg_dump -U postgres brain_os > backups/...sql` — cả 2 lần đều thành công (exit 0, ~1043 dòng, 39.6KB), không log lỗi, verify không chứa `sk-` (API key không nằm trong DB nên không có gì để lộ).
+
+**File mới:**
+- `docker-compose.db.yml` — service `postgres` (image `postgres:16`, `container_name: brainos-postgres`, `restart: unless-stopped`, env `POSTGRES_USER/PASSWORD/DB` khớp `.env` hiện tại, port `5432:5432`, volume `brainos_pgdata:/var/lib/postgresql/data`). **Lưu ý:** phải khai `volumes.brainos_pgdata.name: brainos_pgdata` tường minh — nếu không, Docker Compose tự prefix tên project (`brain-os_brainos_pgdata`) chứ không đúng y hệt tên yêu cầu; đã phát hiện qua lần chạy thử đầu tiên và sửa lại trước khi cutover thật.
+- `scripts/backup-db.sh` — `pg_dump` ra `backups/brain_os_<timestamp>.sql`, tự dò `PROJECT_ROOT` theo vị trí script (không hard-code `/root/brain-os`, chạy đúng dù repo ở đường dẫn khác), giữ lại 20 bản mới nhất (`ls -1t ... | tail -n +21 | xargs rm -f`), in ra đường dẫn file vừa tạo. Thêm script `npm run db:backup` trong `package.json`.
+- `src/app/api/health/db/route.ts` — `GET`, đếm `conversationMessages`/`conversationSessions` thật qua Prisma; `agents`/`agentRuns` trả `null` (schema hiện tại **không có** model `Agent`/`AgentRun` — trả `null` thay vì bịa số `0`, tránh gây hiểu lầm là "có nhưng bằng 0"). Lỗi DB → `{ok:false, database:"error", error}`, HTTP 503, không crash.
+- `.gitignore` thêm `/backups/` — file `pg_dump` có thể chứa nội dung hội thoại/`PrivateMemory` thật, không được commit lên git.
+
+**Cutover container (an toàn, không xoá gì):**
+1. Backup lần cuối ngay trước khi dừng container cũ.
+2. `docker stop brainos-postgres` → `docker rename brainos-postgres brainos-postgres-old-202607051405` (giữ nguyên, **không xoá**, làm lưới an toàn nếu cutover có vấn đề).
+3. `docker compose -f docker-compose.db.yml up -d` → tạo container `brainos-postgres` mới, volume named `brainos_pgdata`, DB `brain_os` rỗng (`\dt` không có bảng nào).
+4. Restore: `docker exec -i brainos-postgres psql -U postgres -d brain_os < backups/brain_os_pre_migration_....sql` — 0 lỗi, đủ lại 19 bảng + đúng 24/3 dòng `ConversationMessage`/`ConversationSession` + bảng `_prisma_migrations` (4 migration, khớp y hệt trước cutover).
+5. `npx prisma migrate deploy` → `"No pending migrations to apply."` (xác nhận restore đã mang theo đúng migration history, không cần chạy lại từ đầu).
+6. Test bền vững: `docker restart brainos-postgres` → data vẫn còn nguyên (24 dòng) — xác nhận named volume hoạt động đúng, khác hẳn hành vi trước đây.
+
+**Đã test qua curl/CLI thật:**
+- `GET /api/health/db` → `{"ok":true,"database":"connected","counts":{"conversationMessages":24,"conversationSessions":3,"agents":null,"agentRuns":null}}` (tăng lên 26 sau khi chạy thêm 1 lượt test `/api/xiaozi/chat`).
+- `POST /api/xiaozi/chat {"text":"Brain OS là gì",...}` → vẫn `provider:"brain_local"` như phiên 24, xác nhận cutover Postgres không phá Xiaozi Bridge.
+- `npm run db:backup` → in đúng đường dẫn file mới, backup có mặt trong `backups/` (4 file, đều dưới ngưỡng giữ 20 bản).
+- `npm run build` pass (cả worktree cô lập lẫn checkout chính), server dev restart thật trên port 3000, `/robot` vẫn 200.
+
+**Không đụng:** NPM/Cloudflare, code Xiaozi Bridge/CLI agent/OpenAI provider (chỉ thêm file mới + 1 dòng script trong `package.json` + 1 dòng `.gitignore`). Container cũ `brainos-postgres-old-202607051405` vẫn còn trên máy (dừng hẳn, không chạy) — có thể xoá thủ công sau khi user xác nhận không cần nữa (`docker rm brainos-postgres-old-202607051405`), phiên này chủ động không tự xoá.
+
+### Xiaozi webhook auth — secret token + rate limit + tài liệu (phiên 26 — 2026-07-05)
+
+Yêu cầu: trước khi nối Xiaozi thật vào endpoint public `https://os.irec.vn/api/xiaozi/chat`, phải bảo vệ webhook bằng secret token + tài liệu cấu hình nhanh. Không phá code hiện tại, không log API key/secret, không động NPM/Cloudflare.
+
+**Quyết định khác 1 chút so với đặc tả gốc (đã cân nhắc kỹ, ghi rõ lý do):** đặc tả gốc đề xuất "cho qua không cần secret nếu `NODE_ENV=development`". App này **hiện chạy live/public bằng `next dev`** (chưa tách sang `next start` production riêng) — nếu bypass thẳng theo `NODE_ENV`, `NODE_ENV` sẽ luôn là `"development"` kể cả với request đi qua domain public, khiến auth **vô tác dụng hoàn toàn** với đúng cái nó cần bảo vệ. Nên bypass ở đây **chỉ** dựa vào việc request có thật sự tới từ `localhost`/`127.0.0.1` hay không (qua header `Host` hoặc IP nguồn) — vẫn đúng tinh thần "cho test nội bộ không cần secret", nhưng không có lỗ hổng khi domain public trỏ vào cùng tiến trình dev server này.
+
+**File mới:**
+- `src/lib/brain/webhook-auth.ts` — export `verifyXiaoziWebhook(req, body)`, `getClientIp(req)`, `simpleRateLimit(key)`.
+  - `getClientIp()`: ưu tiên `x-forwarded-for` (NPM sẽ set IP client thật khi proxy) → `x-real-ip` → `req.ip` (thường `undefined` khi self-host, chỉ có giá trị trên edge/Vercel) → `"unknown"`.
+  - `verifyXiaoziWebhook()`: local (Host hoặc IP là `127.0.0.1`/`localhost`/`::1`) → luôn cho qua. Ngược lại, bắt buộc secret khớp `XIAOZI_WEBHOOK_SECRET` — nhận qua header `x-brainos-secret`, `authorization: Bearer <secret>`, hoặc `body.secret` (ưu tiên theo thứ tự đó). So sánh bằng `crypto.timingSafeEqual` (tránh timing attack), sai độ dài coi như không khớp luôn (không gọi `timingSafeEqual` với 2 buffer khác length vì hàm này throw). **Chưa cấu hình `XIAOZI_WEBHOOK_SECRET` (rỗng/undefined) → luôn từ chối request public** (fail closed), không coi "cả 2 phía đều thiếu secret" là hợp lệ.
+  - `simpleRateLimit(key)`: in-memory `Map`, cửa sổ trượt thô 60s, tối đa 60 request/key — không Redis, đủ cho MVP 1 VPS. Map không tự dọn entry cũ (chấp nhận được ở quy mô hiện tại, ghi chú lại nếu cần revisit).
+- `docs/XIAOZI_SETUP.md` — hướng dẫn đầy đủ: endpoint, method, header auth, payload/response mẫu, flow ưu tiên (Xiaozi template → Brain OS local → OpenAI phức tạp), curl test public/local, rate limit, và checklist việc cần làm trước khi dùng thật (đổi secret, chờ domain, nhập vào cấu hình Xiaozi).
+
+**Sửa:**
+- `.env` — thêm `XIAOZI_WEBHOOK_SECRET="change-me"` (placeholder, **không tự bịa secret thật** theo đúng yêu cầu — user phải tự đổi, xem mục 10 trong `docs/XIAOZI_SETUP.md`).
+- `src/app/api/xiaozi/chat/route.ts` — thêm bước auth (401 `{"ok":false,"error":"Unauthorized Xiaozi webhook"}` nếu fail) + rate limit (429 `{"ok":false,"error":"Too many requests"}`) ngay sau khi parse JSON, trước khi chạm DB/bridge/OpenAI. Rate limit key ưu tiên `body.deviceId`, fallback `getClientIp()`.
+- `src/app/api/xiaozi/status/route.ts` — đổi hẳn format response theo yêu cầu mới: `{ok, endpoint, auth, authConfigured, providerMode:{AI_PROVIDER, ENABLE_OPENAI_FALLBACK, OPENAI_ONLY_FOR_COMPLEX}, database, samplePayload}`. `authConfigured` = đã có secret thật (khác rỗng và khác `"change-me"`) hay chưa — **không bao giờ trả secret thật**. `database` check nhanh bằng 1 query `count()` thật, không giả định.
+- `src/components/robot/XiaoziBridgePanel.tsx` — cập nhật theo format status mới: badge `db: connected/error`, badge `auth: configured/chưa đổi secret`, dòng endpoint + "auth bắt buộc", curl mẫu public che secret bằng `<YOUR_XIAOZI_WEBHOOK_SECRET>` (không bao giờ render secret thật ra HTML vì status endpoint không trả nó). Thêm ghi chú: nút test trong panel chỉ hoạt động khi mở `/robot` qua `localhost` — nếu mở qua domain public, chính request test từ panel cũng bị coi là public và cần secret (panel không thể tự biết secret thật nên không tự test hộ được trường hợp này).
+
+**Đã test qua curl thật (kể cả brute-force qua rate limit):**
+- Local (`127.0.0.1`, không secret) → `200`, `provider:"brain_local"`.
+- Giả lập public thật bằng `Host: os.irec.vn` + `X-Forwarded-For: <ip công khai giả>` (curl `-H "Host:..."` một mình **không đủ** để giả lập public — TCP vẫn từ `127.0.0.1` nên vẫn bị coi là local; phải kèm `X-Forwarded-For` để giả lập đúng cách NPM sẽ forward IP client thật):
+  - Không secret → `401 {"ok":false,"error":"Unauthorized Xiaozi webhook"}`.
+  - Secret sai → `401` (cùng thông báo).
+  - Secret đúng (test tạm bằng secret sinh ngẫu nhiên, không log ra bất kỳ đâu, đã đổi lại `.env` về `"change-me"` ngay sau khi test xong) qua cả `x-brainos-secret` lẫn `authorization: Bearer` → `200`, `provider:"brain_local"`.
+- Rate limit: gửi 65 request liên tiếp cùng `deviceId` → đúng 60 request đầu `200`, từ request 61 trở đi `429`.
+- `GET /api/xiaozi/status` → JSON đúng format mới, `authConfigured:false` (đúng vì đang là placeholder), không có field secret thật ở đâu cả. `brainos.log` grep `sk-`/secret test → 0 kết quả.
+- `npm run build` pass (worktree cô lập + checkout chính), `/robot` vẫn 200.
+
+**Sự cố vận hành gặp phải khi test (không phải bug code):** lệnh restart server (`kill` cũ + `nohup ... &` trong cùng 1 lời gọi Bash) khiến tiến trình `next dev` mới bị chết ngay sau khi compile xong, không có stack trace (nghi ngờ do cách sandbox này reap process con khi 1 lời gọi Bash "kết thúc" dù đã `nohup`). **Fix thao tác (không phải code Brain OS):** tách lệnh kill và lệnh start thành 2 lời gọi Bash riêng, dùng `setsid nohup ... < /dev/null &` + `disown` thay vì chỉ `nohup ... &` trong subshell — ổn định hơn hẳn, không còn bị chết ngầm. Nên dùng cách này cho các lần restart sau.
+
+**Không đụng:** NPM/Cloudflare, DB/Postgres (phiên 25), code bridge/complexity/OpenAI provider (chỉ thêm bước auth/rate-limit bọc ngoài route, không sửa logic xử lý câu bên trong).
+
+### Secret thật cho webhook + xác nhận domain public đã sống (phiên 27 — 2026-07-05)
+
+Yêu cầu: đổi `XIAOZI_WEBHOOK_SECRET` từ placeholder sang secret thật, test lại qua domain public thật, không in/log secret ở đâu cả, không commit `.env`.
+
+**Phát hiện bất ngờ trước khi làm gì:** kiểm tra lại `https://os.irec.vn` (theo thói quen luôn verify trước khi test) thấy **domain đã hoạt động** (`curl -I` → `200`, header `server: cloudflare`) — khác hẳn ghi nhận "525, đang treo, chờ user xác nhận URL NPM" từ phiên 12 tới giờ. Không rõ ai/khi nào sửa NPM (ngoài phạm vi phiên này, không đụng gì tới cấu hình NPM/Cloudflare) — chỉ xác nhận lại bằng curl thật: `GET https://os.irec.vn/api/xiaozi/status` trả đúng JSON từ chính app này, xác nhận domain đã trỏ đúng, không phải false positive.
+
+**Việc đã làm (không in/log giá trị secret ở bất kỳ bước nào):**
+1. Sinh secret: `openssl rand -hex 32`, lưu tạm vào biến shell/file quyền `600` ngoài repo — không `echo`/`cat` ra terminal.
+2. Backup `.env` → `.env.backup.20260705_145127` (cùng thư mục, **không** nằm trong git, đã kiểm tra `.gitignore` chặn `.env` — thêm `.env.backup.*` vào `.gitignore` luôn để chặn cả file backup, đề phòng sau này quên).
+3. Thay giá trị `XIAOZI_WEBHOOK_SECRET` trong `.env` bằng script Python đọc secret từ file tạm rồi ghi đè bằng regex — không có bước nào `cat`/in nội dung `.env` ra output.
+4. Restart app bằng pattern ổn định phát hiện ở phiên 26 (`setsid nohup ... < /dev/null & disown`, tách riêng lệnh kill và lệnh start thành 2 lời gọi Bash).
+
+**Đã test qua domain public thật (không phải giả lập header như phiên 26 — lần này domain đã sống):**
+- `GET https://os.irec.vn/api/xiaozi/status` → `200`, `authConfigured:true` (xác nhận secret thật đã được set, khác `false` lúc còn placeholder).
+- `POST https://os.irec.vn/api/xiaozi/chat` không có header `x-brainos-secret` → `401 {"ok":false,"error":"Unauthorized Xiaozi webhook"}`.
+- `POST https://os.irec.vn/api/xiaozi/chat` với `x-brainos-secret: <secret thật>` → `200`, `provider:"brain_local"`, đúng câu trả lời "Brain OS là gì".
+- `grep` secret thật trong `brainos.log` → 0 kết quả (không bị log ở đâu, kể cả khi request thành công/thất bại).
+- `npm run build` pass sau khi đổi secret + restart.
+
+**Không đụng:** NPM/Cloudflare (chỉ verify bằng curl, không sửa cấu hình gì), code auth/route (không cần sửa gì thêm — hoạt động đúng ngay từ phiên 26, secret thật chỉ là đổi giá trị `.env`).
+
 ---
 
 ## File quan trọng nhất
@@ -248,16 +624,36 @@ Nâng cấp kiến trúc AI provider đã có từ phiên 8 lên đúng cấu tr
 | `src/app/api/context/route.ts` | Context API cho AI agent |
 | `src/app/api/devices/[id]/command/route.ts` | Device command |
 | `src/lib/robot.ts` | Logic mapping command → state cho Robot Simulator |
-| `src/app/robot/page.tsx` | UI Robot Simulator (toàn màn hình + browser TTS) |
+| `src/components/robot/RobotFace.tsx` + `RobotFace.module.css` | Mặt robot SVG/CSS animate (mascot onigiri ChinChin, 8 state, gaze tracking) |
+| `src/components/robot/RobotVision.tsx` | Camera + phát hiện người/mặt nhẹ (FaceDetector hoặc fallback motion detection) |
+| `src/lib/robot/tracking.ts` | `targetToPanTilt()` — servo-ready, hiện chỉ debug console |
+| `src/app/robot/page.tsx` | UI Robot Simulator (toàn màn hình + browser TTS + Hands-free Voice Mode + RobotFace) |
 | `src/app/api/robot/{status,command,event}/route.ts` | API Robot Simulator |
 | `src/app/tablet/page.tsx` | Tablet Launcher + xin quyền mic/camera/notification |
 | `public/manifest.json` | PWA manifest |
 | `public/icons/` | Icon placeholder (192/512/apple-touch) |
-| `src/lib/ai/{types,context,provider,index}.ts` + `src/lib/ai/providers/gemini.ts` | AI provider (fallback/Gemini) cho robot chat — `buildBrainContext()`, `askGemini()` |
-| `src/app/api/robot/chat/route.ts` | API chat robot (`{ok, reply, provider, context_used, gemini_error}`) |
+| `src/lib/brain/system-context.ts` | Context tĩnh mô tả Brain OS/robot ChinChin — gửi kèm cho cả OpenAI provider và CLI agent |
+| `src/lib/brain/reply-schema.ts` | Schema/parse/validate JSON dùng chung cho mọi provider (`NormalizedReply`, `parseReplyJson()`, `FALLBACK_REPLY`) |
+| `src/lib/brain/openai-provider.ts` | `askOpenAI()` — provider chính (nhanh, mặc định), gọi thẳng OpenAI Chat Completions API |
+| `src/lib/brain/cli-agent-router.ts` | `askCliAgents()` — router Codex CLI → Claude CLI → Gemini CLI → fallback, chỉ dùng khi `body.deep === true` |
+| `/usr/local/bin/brainos-codex`, `/usr/local/bin/brainos-gemini` | Wrapper cố định HOME/PATH/TERM/NO_COLOR + flag trust cho Codex/Gemini CLI (ngoài git, xem phiên 17) |
+| `src/lib/brain/session-context.ts` | `ensureSession()`/`loadSessionHistoryText()`/`countSessionMessages()` — ngữ cảnh + lưu hội thoại theo `sessionId` |
+| `src/app/api/robot/chat/route.ts` | API chat robot (`{ok, reply, robot_say, face, action, provider: "openai"\|"cli_agent"\|"fallback", error, session_id, session_message_count, latency_ms}`) |
+| `src/app/api/robot/transcribe/route.ts` | Speech-to-text — nhận audio, gọi OpenAI `/v1/audio/transcriptions`, trả `{ok, text, provider:"openai_transcribe"}` |
+| `src/app/api/robot/tts/route.ts` | Text-to-speech — nhận `{text, voice?}`, gọi OpenAI `/v1/audio/speech`, trả thẳng audio nhị phân (`audio/mpeg`) |
 | `src/lib/media.ts` | Helper thư mục upload + validate mimetype |
 | `src/app/api/media/{upload,route,[id]}` | API MediaFile (upload/list/get/delete) |
 | `uploads/media/` | File ảnh chụp thật (ngoài git, ngoài public/) |
+| `src/lib/brain/complexity.ts` | `isComplexRequest()` — nhận diện câu "phức tạp" cần OpenAI (phiên 24) |
+| `src/lib/brain/xiaozi-bridge-brain.ts` | `xiaoziBridgeBrain()` — bridge nội bộ L1 cho Xiaozi (5 nhóm cố định, phiên 24) |
+| `src/app/api/xiaozi/chat/route.ts` | Webhook chính cho Xiaozi/Xiaozhi — template-first, chỉ gọi OpenAI khi phức tạp (phiên 24) |
+| `src/app/api/xiaozi/status/route.ts` | Config không nhạy cảm cho panel debug Xiaozi Bridge (phiên 24) |
+| `src/components/robot/XiaoziBridgePanel.tsx` | Panel "🔌 Xiaozi Bridge" trên `/robot` — endpoint/env/nút test nhanh (phiên 24) |
+| `docker-compose.db.yml` | Postgres named volume `brainos_pgdata`, `restart: unless-stopped` (phiên 25) |
+| `scripts/backup-db.sh` (`npm run db:backup`) | Backup nhanh `brain_os` ra `backups/`, giữ 20 bản mới nhất (phiên 25) |
+| `src/app/api/health/db/route.ts` | Health check DB — đếm `ConversationMessage`/`ConversationSession` thật (phiên 25) |
+| `src/lib/brain/webhook-auth.ts` | `verifyXiaoziWebhook()`/`getClientIp()`/`simpleRateLimit()` — auth + rate limit cho webhook public (phiên 26) |
+| `docs/XIAOZI_SETUP.md` | Hướng dẫn cấu hình Xiaozi/Xiaozhi gọi Brain OS — endpoint, secret, payload, curl test (phiên 26) |
 
 ---
 
@@ -280,12 +676,28 @@ Nâng cấp kiến trúc AI provider đã có từ phiên 8 lên đúng cấu tr
 - Browser TTS: chỉ trigger khi bấm "Chào" hoặc "Nói thử" — các lệnh khác (Vui, Ngủ, Ngạc nhiên...) không đọc, đúng theo yêu cầu nhưng có thể user muốn mở rộng sau
 - Browser TTS: chưa test giọng đọc thật trên thiết bị (phụ thuộc voice tiếng Việt có sẵn trên hệ điều hành/trình duyệt của user hay không — nếu không có voice `vi`, sẽ dùng giọng mặc định của trình duyệt với `lang="vi-VN"`)
 - Browser TTS: trạng thái `soundEnabled` không lưu localStorage — reload trang sẽ về mặc định bật
-- Robot chat: fallback reply chỉ là keyword matching đơn giản (pin/cảm ơn/tên/chào), không hiểu ngữ cảnh nhiều lượt — cần Gemini hoạt động để trả lời thông minh hơn
-- Robot chat: key Gemini thật hiện có (`~/.bashrc`, ngoài project) **liên tục bị 429** kể cả sau cooldown 60s và sau 62s chờ — nghi ngờ key hết quota hẳn (không phải rate-limit tạm thời), chưa xác nhận được một câu trả lời Gemini thành công thật sự. Cần key khác hoặc chờ quota theo chu kỳ (ngày/tháng tuỳ gói) để test đường thành công.
-- Cooldown 429: biến `cooldownUntil` chỉ tồn tại trong memory của process Next.js hiện tại — nếu server restart, cooldown bị reset về 0 (không ảnh hưởng tới tính đúng đắn logic, chỉ là không persist qua restart, chấp nhận được cho MVP)
-- Robot chat: `accessLevel` cho chat hiện hardcode = 1 ở route (an toàn, không rò PrivateMemory) — khi có auth/session thật, cần sửa để lấy access_level theo user đăng nhập thay vì hardcode
+- Robot chat: fallback cuối cùng (cả OpenAI lẫn CLI agent đều lỗi) chỉ là câu cố định "Tôi đang ở chế độ cơ bản..." (`FALLBACK_REPLY` trong `reply-schema.ts`) — không có keyword matching như kiến trúc cũ (phiên 8-15)
+- Robot chat: **`accessLevel` vẫn được parse/validate trong request (mặc định 3) để tương thích API, nhưng chưa provider nào dùng để lọc dữ liệu** — cả OpenAI lẫn CLI agent đều nhận `SYSTEM_CONTEXT` tĩnh (không truy vấn Memory/PrivateMemory/Decision theo access_level như kiến trúc phiên 13). Nghĩa là hiện tại **không có rò rỉ PrivateMemory qua chat** nhưng cũng **không có ngữ cảnh thật** (không biết task/project/memory gì đang có)
+- **Chế độ `deep: true` (CLI agent, xem phiên 16-18):** Codex CLI chưa đăng nhập (`codex login status` → "Not logged in"), Gemini CLI đang cấu hình auth kiểu API key (không phải OAuth, xem phiên 17) — chỉ Claude CLI hoạt động thật, không ảnh hưởng nhánh OpenAI mặc định. Wrapper `/usr/local/bin/brainos-codex`/`brainos-gemini` nằm **ngoài git** — nếu VPS bị cài lại/đổi máy, cần tạo lại theo nội dung phiên 17. Mỗi lần gọi `deep:true` mất tối thiểu ~8-10s (Claude CLI), tối đa 60s (thử cả 3 CLI) — **chỉ dùng khi chủ động cần**, không phải luồng chat mặc định
+- ~~`face`/`action` chưa được nối vào trạng thái robot thật~~ **đã xong ở phiên 20** — xem section RobotFace phía trên
+- OpenAI provider: model `gpt-5.4-nano` cần `response_format: json_object` + schema tường minh trong system prompt mới trả đủ 4 trường ổn định (đã xác nhận qua test — prompt chỉ liệt kê quy tắc dạng prose, không kèm ví dụ JSON, khiến model hay thiếu trường `reply`) — nếu đổi model khác qua `OPENAI_MODEL`, nên test lại xem model đó có tuân thủ tốt như vậy không, đặc biệt nếu model không hỗ trợ `response_format`
+- RobotFace: gesture `wave`/`nod` không phát lại nếu 2 lượt chat liên tiếp trả cùng giá trị `action` (vd `"wave"` rồi `"wave"` — `useEffect` không thấy đổi nên không re-trigger) — xem chi tiết ở section RobotFace phía trên, chấp nhận được vì chỉ là hiệu ứng phụ
+- RobotFace: chưa test animation bằng mắt trên trình duyệt thật (không cài Chromium/Playwright) — chỉ verify qua build + kiểm tra HTML render đúng cấu trúc SVG
+- RobotVision/Smart Fullscreen Mode (phiên 23): **chưa test bằng camera/mắt thật** — motion-detection fallback + FaceDetector đều chỉ verify qua code review, chưa xác nhận độ nhạy/ngưỡng (`MOTION_DIFF_THRESHOLD=25`) có hợp lý trong điều kiện ánh sáng thật hay không
+- RobotVision: chưa xác nhận chiều trái-phải của `gazeX` có đúng trực giác không (người dịch sang phải thì mắt robot có nhìn đúng hướng không) — đã ghi sẵn cách sửa (đảo dấu `x` trong `handleVisionTarget()`) nếu test tay thấy ngược
+- RobotVision: `FaceDetector` là API thử nghiệm, chỉ một số bản Chrome/Android WebView hỗ trợ (thường sau flag hoặc Origin Trial) — đa số trình duyệt sẽ luôn rơi xuống fallback motion-detection, không phải lỗi
+- Smart Robot Fullscreen Mode: `requestFullscreen()` trên kiosk container có thể bị từ chối trên một số trình duyệt di động (đặc biệt iOS Safari không hỗ trợ Fullscreen API đầy đủ cho phần tử tuỳ ý) — đã có fallback CSS (`fixed inset-0`) nhưng chưa test tay trên iOS thật
+- Smart Robot Fullscreen Mode: bật "Fullscreen Robot" sẽ tự bật voice mode nếu chưa bật, nhưng **không** tự tắt lại camera tracking/voice mode khi thoát fullscreen (thiết kế có chủ đích, để user tự tắt qua nút riêng nếu muốn) — có thể gây bất ngờ nếu user mong đợi mọi thứ tự tắt theo fullscreen
+- OpenAI STT (MediaRecorder + VAD, phiên 21): ngưỡng `THRESHOLD=10` và `SILENCE_MS=1000` là giá trị đoán hợp lý ban đầu, **chưa tune bằng mic thật** — có thể cần chỉnh nếu mic quá nhạy (cắt câu giữa chừng) hoặc quá trễ (chờ lâu mới gửi). Chỉ verify được qua code review + test transcribe API độc lập (curl file mp3 có sẵn), không test được toàn bộ vòng ghi âm-VAD-gửi bằng mic thật (không có trình duyệt thật trong môi trường này)
+- OpenAI STT: `MediaRecorder` không được test trên Safari/iOS thật — mimeType mặc định trên Safari có thể khác Chrome (`audio/mp4` thay vì `audio/webm`); đã xử lý qua `resolveFilename()`/đặt tên theo `blob.type` thật (không hardcode `.webm`) nhưng chưa xác nhận bằng thiết bị Safari thật
+- OpenAI TTS: `audio.play()` có thể bị chặn bởi autoplay policy của trình duyệt nếu gọi ngoài ngữ cảnh tương tác người dùng — trong luồng hiện tại (bấm nút/nói vào mic) luôn có tương tác trước đó nên nhìn chung không gặp, nhưng chưa test kỹ trên mọi trình duyệt/thiết bị
+- Session/ngữ cảnh: model đôi lúc nhớ nhầm chi tiết nhỏ dù cơ chế nhớ hoạt động đúng (vd test thật trả lời "Bậu là Tú" thay vì đúng tên đã nói) — đây là hạn chế tự nhiên của LLM khi tổng hợp lại lịch sử dạng text thuần, không phải lỗi cơ chế lưu/truyền context (đã xác nhận DB lưu đúng, context truyền đúng)
+- Session: không có UI xem/xoá lịch sử theo session, không có giới hạn số session hay dọn dẹp session cũ (mỗi trình duyệt tự giữ 1 `sessionId` vĩnh viễn trong `localStorage` trừ khi user tự xoá) — chấp nhận được cho MVP
 - Voice-to-text: dùng `webkitSpeechRecognition`, chỉ Chrome/Edge/Safari hỗ trợ tốt — Firefox không hỗ trợ, nút mic sẽ tự disable
-- Voice-to-text: `continuous=false` nên chỉ nhận 1 câu nói mỗi lần bấm mic, không phải hội thoại liên tục
+- Voice-to-text: `continuous=false` nên chỉ nhận 1 câu nói mỗi lần bấm mic (khối Chat/Voice thủ công), không phải hội thoại liên tục — **Hands-free Voice Mode (phiên 19) tự khởi động lại recognition sau mỗi lượt nên có cảm giác liên tục**, dù cơ chế nền vẫn là nhiều phiên `continuous=false` nối tiếp nhau, không phải 1 phiên streaming thật
+- Hands-free Voice Mode: chưa test bằng tai/mic thật (chỉ verify qua build + HTML render) — cần user tự thử trên Chrome/Chrome Android thật, đặc biệt qua HTTPS (`https://os.irec.vn/robot`)
+- Hands-free Voice Mode: nếu mạng chậm/API trả lời lâu, robot vẫn ở trạng thái "Đang nghĩ" tới khi có response — không có timeout riêng ở tầng UI (dựa vào timeout tự nhiên của `fetch`/server, không set thêm `AbortController` phía client cho lời gọi này)
+- Hands-free Voice Mode: 2 phiên `SpeechRecognition` (thủ công vs hands-free) không thể chạy đồng thời — đã disable 2 nút mic thủ công khi hands-free bật, nhưng nếu user thao tác rất nhanh (vd đổi tab rồi quay lại ngay lúc state chưa kịp re-render) có thể có khoảng trống rất ngắn chưa disable kịp; chấp nhận được cho MVP
 - Camera: không có gallery xem lại ảnh đã chụp trong UI — chỉ có nút chụp+lưu, xem dữ liệu phải query DB/API trực tiếp
 - MediaFile: không có route serve byte ảnh ra ngoài (theo đúng yêu cầu bảo mật) — muốn xem ảnh phải truy cập trực tiếp file trên server
 - `/robot`: đã bỏ hệ thống tab (phiên 9) — nếu trang quá dài trên màn hình nhỏ, cần cuộn qua Chat → Voice → Camera → Mặt robot → Điều khiển → Event log; chưa có nav nội bộ (chỉ có anchor `#chat`/`#voice`/`#camera` để deep-link từ `/tablet`)
@@ -319,7 +731,7 @@ Chỉ sửa presentation của `src/app/robot/page.tsx`, **không đổi API, kh
   ```
 - Chạy `npx prisma migrate dev --name init` → tạo migration `migrations/20260704102124_init/`, áp dụng thành công.
 - Chạy `npm run db:seed` → seed OK. Đã verify số dòng trong DB khớp seed: Profile=1, Project=5, Device=5, Decision=5, Memory=2, Connector=4, Preference=3.
-- **Lưu ý:** container `brainos-postgres` không có volume mount ngoài — nếu bị `docker rm`, dữ liệu mất. Nếu cần persist qua restart máy, thêm `-v brainos_pgdata:/var/lib/postgresql/data` khi tạo lại.
+- **Lưu ý:** container `brainos-postgres` không có volume mount **tường minh** (không dùng `-v`), nhưng image Postgres tự tạo volume ẩn danh (anonymous volume) nên data vẫn sống sót qua restart container thường — **chỉ mất khi `docker rm` kèm cờ xoá volume hoặc xoá volume ẩn danh thủ công**. Rủi ro thật đã gặp ở phiên 15: volume ẩn danh có thể mang password cũ khác với `POSTGRES_PASSWORD` khai báo lúc `docker run` lần sau nếu container bị tạo lại mà tái sử dụng volume cũ — xem phiên 15 để biết cách sửa (đổi password bằng `ALTER USER`, không cần recreate). Muốn persist rõ ràng và tránh nhầm lẫn này, nên đổi sang named volume: `-v brainos_pgdata:/var/lib/postgresql/data`.
 - `npm run build` chạy lại sau migrate — vẫn pass, không có regression.
 
 ## Lỗi đã sửa (phiên 2 — 2026-07-04)
