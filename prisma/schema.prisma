@@ -84,6 +84,7 @@ model People {
   updated_at   DateTime @updatedAt
 
   face_profile FaceProfile?
+  media_files  MediaFile[]
 }
 
 // ─── FACE PROFILE ────────────────────────────────────────────────────────────
@@ -118,6 +119,8 @@ model Project {
   tasks        Task[]
   memories     Memory[]
   decisions    Decision[]
+  conversation_messages ConversationMessage[]
+  media_files  MediaFile[]
 }
 
 enum ProjectStatus {
@@ -201,6 +204,8 @@ model Device {
 
   events       DeviceEvent[]
   robot_state  RobotState?
+  conversation_messages ConversationMessage[]
+  media_files  MediaFile[]
 }
 
 enum DeviceType {
@@ -233,6 +238,59 @@ model RobotState {
   updated_at      DateTime  @updatedAt
 
   device          Device    @relation(fields: [device_id], references: [id], onDelete: Cascade)
+}
+
+// ─── CONVERSATION MESSAGE ────────────────────────────────────────────────────
+// Lịch sử chat giữa user và robot (template reply hoặc Gemini nếu có GEMINI_API_KEY).
+model ConversationMessage {
+  id         String   @id @default(cuid())
+  role       ChatRole
+  content    String
+  provider   String?
+  device_id  String?
+  project_id String?
+  created_at DateTime @default(now())
+
+  device     Device?  @relation(fields: [device_id], references: [id], onDelete: Cascade)
+  project    Project? @relation(fields: [project_id], references: [id])
+
+  @@index([device_id, created_at])
+}
+
+enum ChatRole {
+  user
+  robot
+}
+
+// ─── MEDIA FILE ──────────────────────────────────────────────────────────────
+// Ảnh chụp từ camera browser/tablet. File lưu ở server (uploads/media), DB chỉ lưu metadata/path.
+model MediaFile {
+  id            String          @id @default(cuid())
+  filename      String
+  original_name String
+  mime_type     String
+  size          Int
+  path          String
+  source_type   MediaSourceType
+  device_id     String?
+  project_id    String?
+  person_id     String?
+  access_level  Int             @default(3)
+  metadata      Json?
+  created_at    DateTime        @default(now())
+
+  device        Device?  @relation(fields: [device_id], references: [id], onDelete: Cascade)
+  project       Project? @relation(fields: [project_id], references: [id])
+  person        People?  @relation(fields: [person_id], references: [id])
+
+  @@index([source_type, created_at])
+}
+
+enum MediaSourceType {
+  camera
+  upload
+  robot
+  tablet
 }
 
 // ─── DEVICE EVENT ────────────────────────────────────────────────────────────

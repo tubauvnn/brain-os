@@ -16,11 +16,18 @@ export async function GET() {
     }
 
     const state = await getOrCreateRobotState(device.id);
-    const recent_events = await prisma.deviceEvent.findMany({
-      where: { device_id: device.id },
-      orderBy: { created_at: "desc" },
-      take: 20,
-    });
+    const [recent_events, recent_messages] = await Promise.all([
+      prisma.deviceEvent.findMany({
+        where: { device_id: device.id },
+        orderBy: { created_at: "desc" },
+        take: 20,
+      }),
+      prisma.conversationMessage.findMany({
+        where: { device_id: device.id },
+        orderBy: { created_at: "desc" },
+        take: 30,
+      }),
+    ]);
 
     return NextResponse.json({
       ok: true,
@@ -35,6 +42,7 @@ export async function GET() {
         last_command_at: state.last_command_at,
       },
       recent_events,
+      recent_messages: recent_messages.reverse(),
     });
   } catch (e) {
     return handleError(e);
