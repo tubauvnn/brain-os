@@ -2,6 +2,17 @@
 
 **Đọc STATE.md trước để biết đã làm gì.**
 
+## -8. (Mới — phiên 35, 2026-07-07) ⚠️ Sự cố Postgres bị tấn công đã cứu xong + audit khoá port — còn 3 việc ưu tiên cao
+
+**Đã xử lý xong (phiên 35):** Postgres bị bot brute-force chiếm quyền (mật khẩu mặc định `postgres:postgres`, port từng public `0.0.0.0:5432`) — đã khôi phục LOGIN, đổi bind về `127.0.0.1`, rotate password, restore `brain_os` từ backup `2026-07-05 14:15`, xoá database rác `readme_to_recover`. Ngay sau đó đã audit toàn VPS, khoá bằng `iptables`/`ip6tables` các port admin/dev không cần public (3000, 81, 8080, 9000, 9443, 8090, 8501) mà không đụng NPM/Cloudflare/container binding. Chi tiết đầy đủ: STATE.md phiên 35, `docs/VPS_SECURITY_AUDIT.md`.
+
+**Việc còn lại — ưu tiên cao (khác hẳn các mục bên dưới, nên làm sớm):**
+1. **Cài persistence cho firewall rule** (`iptables-persistent`/`netfilter-persistent` hoặc systemd unit riêng) — rule vừa thêm **sẽ mất khi VPS reboot lần nữa**, lặp lại đúng lỗ hổng đã gây ra sự cố Postgres. Chưa làm trong phiên 35 vì cần cài thêm gói, ngoài phạm vi "chỉ audit + khoá" đã thống nhất.
+2. **Thêm supervisor cho Brain OS** (`systemd`/`pm2`) — hiện `next dev` chạy tay qua `setsid nohup`, không tự phục hồi sau reboot (chính là nguyên nhân Brain OS chết ở đầu phiên 35).
+3. **User tự test port đã khoá từ mạng ngoài thật** (điện thoại 4G, không qua VPN VPS) — môi trường làm việc không tự verify được 100% từ vị trí internet thật (xem `docs/VPS_SECURITY_AUDIT.md` mục 5.1 — tự test từ VPS bị "hairpin" nội bộ, không đáng tin).
+4. Cân nhắc đổi target NPM của `code.irec.vn` từ IP public (`42.96.12.122:8080`) sang bridge IP nội bộ (`172.17.0.3:8080`) — giảm lý do phải giữ port 8080 public, nhưng cần sửa trong NPM UI (cần user tự làm/xác nhận trước, ngoài phạm vi "không phá NPM" của phiên 35).
+5. Xoá 2 file `.env.backup.*` cũ (phiên 27+28, chứa secret cũ) nếu còn — ghi nợ từ NEXT.md phiên 30, vẫn chưa làm.
+
 ## -7. (Mới — phiên 34, 2026-07-07) ✅ Chuẩn bị demo Xiaozhi client voice thật qua SSH tunnel
 
 **Đã xử lý xong (phiên 34):** server Xiaozhi vẫn chạy ổn (không đụng), nhưng chưa có client voice thật kết nối. Đã tạo `/opt/xiaozhi/py-xiaozhi/config.brainos.example.json` (mẫu config override `WEBSOCKET_URL`/`OTA_VERSION_URL`, ngoài git repo brain-os), thêm section "🎙️ Demo Client Voice" vào `/robotonline` (lệnh SSH tunnel, client config, Brain OS bridge info, cảnh báo không mở port public), và viết `docs/XIAOZHI_CLIENT_DEMO.md` (hướng dẫn đầy đủ SSH tunnel + chạy `py-xiaozhi` trên máy có mic/loa + khảo sát phương án proxy public qua subdomain riêng, chưa đổi NPM). Xem chi tiết STATE.md phiên 34.
