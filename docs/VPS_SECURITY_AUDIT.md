@@ -98,3 +98,17 @@ curl -m 5 -I http://127.0.0.1:9000    # phải vẫn 200 (local được phép)
 4. Quyết định có nên chuyển `code.irec.vn` sang trỏ NPM → IP nội bộ bridge (`172.17.0.3:8080`) thay vì IP public — giảm bớt lý do phải giữ 8080 public, nhưng cần sửa cấu hình trong NPM UI (ngoài phạm vi "không phá NPM" của audit này, cần user tự làm hoặc xác nhận trước).
 5. Xoá 2 file `.env.backup.*` cũ trên `/root/brain-os` nếu còn (ghi nhận từ NEXT.md phiên 30) — không liên quan trực tiếp audit này nhưng cùng nhóm rủi ro rò rỉ secret cũ.
 6. Không mở lại Xiaozhi standalone task trong phiên audit này (đúng yêu cầu) — có thể quay lại bình thường, không bị ảnh hưởng bởi bất kỳ thay đổi nào ở đây (port 18000/18003 không đụng tới).
+
+## 8. Dọn dẹp sau audit + xác nhận trạng thái (2026-07-07 ~15:00 UTC)
+
+**.env backup đã dọn:** `.env.backup.20260705_145127`, `.env.backup.20260705_154032`, `.env.save` — chuyển từ `/root/brain-os` sang `/root/old-env-backups` (`chmod 700`, ngoài git repo, ngoài mọi thư mục web-accessible). `/root/brain-os` giờ chỉ còn `.env` thật đang dùng (không tracked bởi git — `git ls-files` xác nhận rỗng cho mọi pattern `.env*`, khớp `.gitignore` dòng 3-5: `.env`, `.env.local`, `.env.backup.*`). Không có nội dung `.env` nào bị `cat`/in ra trong quá trình dọn.
+
+**Brain OS sau dọn dẹp:** vẫn sống, **không restart** (không cần thiết) — `curl 127.0.0.1:3000/robot` → `200`, `curl https://os.irec.vn/robot` → `200`, `curl https://os.irec.vn/xiaozhi` → `200`.
+
+**Xiaozhi standalone sau dọn dẹp:** container `xiaozhi-standalone-server` vẫn `Up` (~3h liên tục), `RestartCount=0` (không có restart loop), port `127.0.0.1:18000`/`127.0.0.1:18003` — đúng như thiết kế, không có `0.0.0.0:8000`/`8003` nào còn sót. `curl http://127.0.0.1:18003/xiaozhi/ota/` → `200`, trả đúng địa chỉ websocket standalone. Không đụng gì tới Brain OS trong lúc kiểm tra. Đã tạo `/opt/xiaozhi-standalone/COMMANDS.md` (lệnh start/stop/log/tunnel nhanh, container name xác nhận thật: `xiaozhi-standalone-server`, không phải placeholder).
+
+**Port public hiện tại (không đổi so với mục 4):** `22`/`26266` SSH, `80`/`443` NPM.
+
+**Port local-only hiện tại (không đổi so với mục 3, xác nhận lại còn nguyên):** `3000` (Brain OS), `81`, `8080` (code-server), `9000`/`9443` (Portainer), `8090`/`8501` (MoneyPrinterTurbo), `5432` (Postgres), `18000`/`18003` (Xiaozhi standalone).
+
+**Không có secret nào bị stage/commit** trong lần dọn này — `git status --short` trước khi add chỉ add đúng 3 file docs/state, không có `.env*` nào xuất hiện trong danh sách thay đổi.

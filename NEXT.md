@@ -11,7 +11,16 @@
 2. **Thêm supervisor cho Brain OS** (`systemd`/`pm2`) — hiện `next dev` chạy tay qua `setsid nohup`, không tự phục hồi sau reboot (chính là nguyên nhân Brain OS chết ở đầu phiên 35).
 3. **User tự test port đã khoá từ mạng ngoài thật** (điện thoại 4G, không qua VPN VPS) — môi trường làm việc không tự verify được 100% từ vị trí internet thật (xem `docs/VPS_SECURITY_AUDIT.md` mục 5.1 — tự test từ VPS bị "hairpin" nội bộ, không đáng tin).
 4. Cân nhắc đổi target NPM của `code.irec.vn` từ IP public (`42.96.12.122:8080`) sang bridge IP nội bộ (`172.17.0.3:8080`) — giảm lý do phải giữ port 8080 public, nhưng cần sửa trong NPM UI (cần user tự làm/xác nhận trước, ngoài phạm vi "không phá NPM" của phiên 35).
-5. Xoá 2 file `.env.backup.*` cũ (phiên 27+28, chứa secret cũ) nếu còn — ghi nợ từ NEXT.md phiên 30, vẫn chưa làm.
+5. ~~Xoá 2 file `.env.backup.*` cũ~~ ✅ **Đã xong ở phiên 36** — xem mục -9 bên dưới.
+
+## -9. (Mới — phiên 36, 2026-07-07) ✅ Dọn `.env` backup cũ + xác nhận Xiaozhi standalone sống, local-only — sẵn sàng test voice thật
+
+**Đã xử lý xong (phiên 36):** chuyển hết `.env.backup.*`/`.env.save` từ `/root/brain-os` sang `/root/old-env-backups` (`chmod 700`, ngoài git). Xác nhận lại Brain OS sống (`/`, `/robot`, `/xiaozhi` đều `200`, **không restart**) và Xiaozhi standalone (`xiaozhi-standalone-server`) chạy khoẻ, `RestartCount=0`, port `127.0.0.1:18000`/`18003` (không public). Tạo `/opt/xiaozhi-standalone/COMMANDS.md` (lệnh check/log/stop/start/tunnel). Chi tiết: STATE.md phiên 36, `docs/VPS_SECURITY_AUDIT.md` mục 8.
+
+**Việc tiếp theo:**
+1. **Test Xiaozhi standalone qua SSH tunnel trên laptop/PC có mic/loa thật** — xem `/opt/xiaozhi-standalone/COMMANDS.md` mục 5-6 (`ssh -N -L 18000:127.0.0.1:18000 -L 18003:127.0.0.1:18003 root@42.96.12.122 -p 26266`, rồi chạy `py-xiaozhi` trỏ `ws://127.0.0.1:18000`/`http://127.0.0.1:18003`). Agent không tự làm được (không có mic/loa trong môi trường này).
+2. **Chưa public port `18000`/`18003`** — cố ý, giữ nguyên `127.0.0.1`-only cho tới khi user quyết định khác.
+3. **Chưa ghép lại Xiaozhi với Brain OS** — cố ý, 2 hệ hoàn toàn tách biệt theo đúng yêu cầu, không đổi.
 
 ## -7. (Mới — phiên 34, 2026-07-07) ✅ Chuẩn bị demo Xiaozhi client voice thật qua SSH tunnel
 
