@@ -2,6 +2,16 @@
 
 **Đọc STATE.md trước để biết đã làm gì.**
 
+## -7. (Mới — phiên 34, 2026-07-07) ✅ Chuẩn bị demo Xiaozhi client voice thật qua SSH tunnel
+
+**Đã xử lý xong (phiên 34):** server Xiaozhi vẫn chạy ổn (không đụng), nhưng chưa có client voice thật kết nối. Đã tạo `/opt/xiaozhi/py-xiaozhi/config.brainos.example.json` (mẫu config override `WEBSOCKET_URL`/`OTA_VERSION_URL`, ngoài git repo brain-os), thêm section "🎙️ Demo Client Voice" vào `/robotonline` (lệnh SSH tunnel, client config, Brain OS bridge info, cảnh báo không mở port public), và viết `docs/XIAOZHI_CLIENT_DEMO.md` (hướng dẫn đầy đủ SSH tunnel + chạy `py-xiaozhi` trên máy có mic/loa + khảo sát phương án proxy public qua subdomain riêng, chưa đổi NPM). Xem chi tiết STATE.md phiên 34.
+
+**Việc còn lại (cần user tự làm, agent không tự làm thay được — không có mic/loa/laptop trong môi trường này):**
+1. **Chạy `py-xiaozhi` thật trên laptop/PC có mic+loa** — theo `docs/XIAOZHI_CLIENT_DEMO.md` mục 3: mở SSH tunnel (`ssh -N -L 8000:127.0.0.1:8000 -L 8003:127.0.0.1:8003 root@42.96.12.122 -p 26266`), clone `py-xiaozhi`, `pip install -r requirements.txt`, sửa config trỏ `127.0.0.1`, chạy `python main.py --mode cli --skip-activation` (hoặc GUI), nói thử vào mic — đây là bước duy nhất còn thiếu để có voice thật.
+2. Nếu tablet Android khó chạy SSH tunnel dạng port-forward, tạm demo bằng web `https://os.irec.vn/xiaozhi` (không cần tunnel/cài gì) cho tới khi tìm được app SSH mobile hỗ trợ tunnel ổn định.
+3. **Quyết định có cần proxy public không** (chưa làm, chỉ khảo sát) — nếu sau này cần thiết bị ngoài kết nối không qua tunnel (vd ESP32 thật, nhiều người test cùng lúc): xem mục 5 trong `docs/XIAOZHI_CLIENT_DEMO.md`, cân nhắc subdomain riêng (`xiaozhi.irec.vn`/`ws-xiaozhi.irec.vn`) thay vì path chung `os.irec.vn` (rủi ro đụng route Next.js `/xiaozhi` đã có). Cần xác nhận auth/protocol của WebSocket Xiaozhi trước khi public hoá.
+4. `/robotonline` có 2 lỗi TypeScript có sẵn từ phiên 33 (`OnlineBadge` thiếu prop `checking` ở 2 card Xiaozhi, dòng ~76/84 `page.tsx`) — không sửa trong phiên này (ngoài phạm vi yêu cầu), có thể dọn sau nếu cần.
+
 ## -6. (Mới — phiên 33, 2026-07-07) ✅ Fix 404 `/robotonline` + `/api/robotonline/status`
 
 **Đã xử lý xong (phiên 33):** route `/robotonline` (page) và `/api/robotonline/status` (API) chưa từng được tạo — đó là lý do `curl` trả `NEXT_NOT_FOUND`, không phải bug ẩn. Đã tạo `src/app/robotonline/page.tsx` (4 card trạng thái: Brain OS, Xiaozhi HTTP/OTA `127.0.0.1:8003`, Xiaozhi WebSocket `127.0.0.1:8000`, Brain OS Bridge `/v1`, tự poll mỗi 10s, link quay lại `/robot`/`/xiaozhi`) và `src/app/api/robotonline/status/route.ts` (check HTTP/OTA qua `fetch` timeout 800ms, check WebSocket qua `net.Socket` TCP connect, không crash nếu Xiaozhi offline). Đã test cả 4 endpoint (`127.0.0.1:3000` và `https://os.irec.vn`, cả page lẫn API) → tất cả `200`. Regression `/robot`, `/xiaozhi`, `/api/xiaozi/chat`, `/v1/chat/completions` → không đổi hành vi, không có `404` mới. Không đụng Cloudflare/NPM, không log secret. Xem chi tiết STATE.md phiên 33.
