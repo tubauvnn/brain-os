@@ -1,9 +1,9 @@
 # STATE — Trạng thái Brain OS MVP
 
 **Ngày tạo:** 2026-07-04  
-**Cập nhật:** 2026-07-05 (phiên 27)  
-**Phiên bản:** 0.1.0 MVP + Robot Simulator (mặt SVG animate + camera tracking) + Tablet/PWA + Chat/Voice/Camera + Hands-free Voice Mode (OpenAI STT + OpenAI TTS) + Smart Robot Fullscreen Mode + Session/ngữ cảnh hội thoại + OpenAI provider chính + CLI Agent Router chế độ `deep` + Xiaozi/Xiaozhi Bridge (template-first, phiên 24) + Postgres persistence: named volume + backup + health check (phiên 25) + Xiaozi webhook auth: secret token + rate limit + docs (phiên 26) + **Domain `os.irec.vn` đã sống + secret thật đã set (phiên 27)**  
-**Trạng thái:** Full stack chạy được — install, generate, migrate, seed, build đều pass. **Phiên 27 — domain public đã hoạt động và webhook đã có secret thật:** `https://os.irec.vn` giờ trả `200` thật (khác ghi nhận cũ "525, đang treo" — không rõ ai/khi nào đã sửa NPM, nhưng đã verify lại bằng curl thật, xem chi tiết bên dưới). `XIAOZI_WEBHOOK_SECRET` trong `.env` đã được đổi từ placeholder `"change-me"` sang secret thật (`openssl rand -hex 32`, **giá trị không ghi ở đây, không log ở đâu cả** — chỉ có trong `.env` trên VPS). Đã test qua đúng domain thật `https://os.irec.vn/api/xiaozi/chat`: không có secret → `401`; có đúng secret (`x-brainos-secret`) → `200`, `provider:"brain_local"`. `.env.backup.<timestamp>` được tạo trước khi đổi (không commit, không nằm trong git). Webhook Xiaozi giờ **sẵn sàng để nhập vào cấu hình thiết bị thật** — xem NEXT.md. `/api/xiaozi/chat` có auth (phiên 26): request local (`127.0.0.1`/`localhost`) qua thẳng để test nội bộ; request public bắt buộc `x-brainos-secret` hoặc `Authorization: Bearer <secret>`; rate limit in-memory 60 request/phút/`deviceId`. `GET /api/xiaozi/status` không lộ secret thật, có `authConfigured`/`database`/`providerMode`/`samplePayload`. Postgres (phiên 25) đã bền dữ liệu qua named volume `brainos_pgdata`, có `npm run db:backup` + `GET /api/health/db`. Robot chat (`/api/robot/chat`, dùng cho `/robot` simulator) mặc định gọi **OpenAI API** (`gpt-5.4-nano`, ~2s); `deep: true` mới dùng CLI Agent Router. Chat/voice **nhớ ngữ cảnh trong 1 phiên** (phiên 21). Hands-free Voice Mode (OpenAI STT/TTS, phiên 22). Smart Robot Fullscreen Mode (phiên 23). Xiaozi/Xiaozhi Bridge (phiên 24): webhook theo mô hình **template-first**, mặc định OpenAI **tắt** (`ENABLE_OPENAI_FALLBACK=false`). **Auth thật của Codex CLI và Gemini CLI trên VPS này vẫn chưa xong** (xem phiên 17) — chỉ Claude CLI hoạt động trong CLI Agent Router, không ảnh hưởng nhánh OpenAI mặc định. Robot lưu ảnh chụp camera vào `MediaFile`.
+**Cập nhật:** 2026-07-07 (phiên 33)  
+**Phiên bản:** 0.1.0 MVP + Robot Simulator (mặt SVG animate + camera tracking) + Tablet/PWA + Chat/Voice/Camera + Hands-free Voice Mode (OpenAI STT + OpenAI TTS) + Smart Robot Fullscreen Mode + Session/ngữ cảnh hội thoại + OpenAI provider chính + CLI Agent Router chế độ `deep` + Xiaozi/Xiaozhi Bridge (template-first, phiên 24) + Postgres persistence: named volume + backup + health check (phiên 25) + Xiaozi webhook auth: secret token + rate limit + docs (phiên 26) + Domain `os.irec.vn` đã sống + secret thật đã set (phiên 27) + Xiaozi webhook secret đã rotate + fix production build (phiên 28) + Xiaozi Bridge panel test được qua domain public bằng secret nhập tay (phiên 29) + OpenAI-compatible bridge `/v1/chat/completions` + `/v1/models` cho Xiaozhi (phiên 30) + fix `/xiaozhi` web demo trả lời chung chung (phiên 31) + `brain_local_demo` phong phú hơn (phiên 32) + **`/robotonline` status page + `/api/robotonline/status` (phiên 33)**  
+**Trạng thái:** Full stack chạy được — install, generate, migrate, seed, build đều pass. **Phiên 33 — fix 404 `/robotonline`:** route `src/app/robotonline/page.tsx` + `src/app/api/robotonline/status/route.ts` chưa từng tồn tại (không phải bug, đơn giản là chưa tạo) nên Next trả `NEXT_NOT_FOUND` cho cả page lẫn API. Đã tạo page hiển thị 4 card trạng thái (Brain OS, Xiaozhi HTTP/OTA `127.0.0.1:8003`, Xiaozhi WebSocket `127.0.0.1:8000`, Brain OS Bridge `https://os.irec.vn/v1`) tự poll `/api/robotonline/status` mỗi 10s, có link quay lại `/robot` và `/xiaozhi`. API check Xiaozhi HTTP/OTA bằng `fetch` với `AbortController` timeout 800ms (bắt mọi response, kể cả lỗi HTTP, miễn có phản hồi là coi như online), check WebSocket bằng TCP `net.Socket` connect thô tới port 8000 (không cần handshake WS đầy đủ) — cả hai đều `try/catch` nên Xiaozhi offline không làm crash route. Không đổi Cloudflare/NPM, không đụng `/robot`, `/xiaozhi`, `/api/xiaozi/chat`, `/v1/chat/completions` (đã regression-test qua cả localhost lẫn domain thật, vẫn `200`/`400` như cũ, không có `404`). Đã test đủ 4 endpoint qua cả `127.0.0.1:3000` lẫn `https://os.irec.vn` → tất cả `200`. **Phiên 30 — thêm OpenAI-compatible bridge:** nhiều app Xiaozhi chỉ cho nhập cấu hình kiểu OpenAI (Base URL/API Key/Model), không có chỗ nhập webhook body/header tuỳ biến như `/api/xiaozi/chat` — đã thêm `POST /v1/chat/completions` + `GET /v1/models` giả lập đúng hợp đồng OpenAI Chat Completions. Logic xử lý chính (`ensureSession`, lookup device, gọi `xiaoziBridgeBrain`, complexity-detector, OpenAI-fallback, lưu `ConversationMessage`, ghi `ActivityLog`) đã **tách ra `src/lib/brain/xiaozi-handler.ts` (`handleXiaoziMessage()`)** dùng chung cho cả `/api/xiaozi/chat` lẫn `/v1/chat/completions` — không copy/paste logic, `/api/xiaozi/chat` giờ chỉ còn parse/validate/auth/rate-limit rồi gọi handler. Auth dùng lại đúng `XIAOZI_WEBHOOK_SECRET`/`verifyXiaoziWebhook()` (Bearer hoặc `x-brainos-secret`, local bypass để test), chỉ đổi hình dạng lỗi 401 sang chuẩn OpenAI (`{"error":{"message":"Unauthorized Brain OS compatible API","type":"unauthorized"}}`). `/v1/chat/completions` hỗ trợ cả non-stream lẫn `stream:true` (SSE tối thiểu — 1 chunk nội dung + 1 chunk `finish_reason:"stop"` + `[DONE]`, không stream token thật vì nguồn trả lời là bridge nội bộ/OpenAI đã trả nguyên câu). Deployment cho Xiaozhi OpenAI-compatible dùng chung 1 `deviceId`/`sessionId` cố định (`xiaozhi-openai-compatible`/`openai-compatible-xiaozhi-openai-compatible`) — hạn chế: nhiều thiết bị gọi qua bridge này sẽ chia sẻ chung 1 session. Đã test đầy đủ qua domain public thật: `/v1/models` với Bearer → `200`; `/v1/chat/completions` với Bearer → `200`, `choices[0].message.content` đúng; không có secret → `401`. `/api/xiaozi/chat` vẫn hoạt động đúng sau refactor (regression test qua domain thật, lệnh "ngủ đi" → `action:"sleep"` như cũ). Xiaozi Bridge panel (phiên 29) vẫn hoạt động, secret không đổi thêm ở phiên này. Postgres (phiên 25) vẫn bền dữ liệu qua named volume `brainos_pgdata`. Domain `https://os.irec.vn` vẫn hoạt động bình thường (phiên 27). Robot chat (`/api/robot/chat`) mặc định gọi **OpenAI API** (`gpt-5.4-nano`, ~2s); `deep: true` mới dùng CLI Agent Router. Chat/voice nhớ ngữ cảnh trong 1 phiên (phiên 21). Hands-free Voice Mode (OpenAI STT/TTS, phiên 22). Smart Robot Fullscreen Mode (phiên 23). Xiaozi/Xiaozhi Bridge (phiên 24): webhook theo mô hình **template-first**, mặc định OpenAI **tắt** (`ENABLE_OPENAI_FALLBACK=false`). **Auth thật của Codex CLI và Gemini CLI trên VPS này vẫn chưa xong** (xem phiên 17). Robot lưu ảnh chụp camera vào `MediaFile`.
 
 ---
 
@@ -610,6 +610,142 @@ Yêu cầu: đổi `XIAOZI_WEBHOOK_SECRET` từ placeholder sang secret thật, 
 
 **Không đụng:** NPM/Cloudflare (chỉ verify bằng curl, không sửa cấu hình gì), code auth/route (không cần sửa gì thêm — hoạt động đúng ngay từ phiên 26, secret thật chỉ là đổi giá trị `.env`).
 
+### Rotate secret bị lộ + fix `npm run build` (phiên 28 — 2026-07-05)
+
+Yêu cầu: secret webhook set ở phiên 27 từng hiện ra terminal/screenshot (bị lộ) → cần rotate secret mới. Đồng thời `npm run build` đang lỗi `Cannot find module for page: /api/decisions/[id]`, cần sửa sạch trước khi cấu hình Xiaozi thật.
+
+**Điều tra lỗi build trước khi sửa gì:**
+- `find src/app -path '*decisions*' -type f` → đủ 3 file (`decisions/page.tsx`, `api/decisions/route.ts`, `api/decisions/[id]/route.ts`), không thiếu file nào.
+- Đọc `src/app/api/decisions/[id]/route.ts` — `GET`/`PATCH`/`DELETE` đều dùng đúng `prisma.decision`, import `ok`/`err`/`handleError` từ `@/lib/api` đều tồn tại, model `Decision` vẫn có trong `prisma/schema.prisma`. Không thấy lỗi cú pháp/import nào.
+- `npx tsc --noEmit` → **sạch, 0 lỗi** — xác nhận không phải lỗi type/code.
+- Kết luận: lỗi do **chạy `next build` (production) trong khi `next dev` vẫn đang chạy** — cả 2 lệnh cùng ghi vào chung thư mục `.next/`, gây corrupt file build (đã gặp hiện tượng tương tự ở phiên 27 với `/api/xiaozi/status` trả 500 `MODULE_NOT_FOUND`, cùng nguyên nhân). **Không sửa route nào** vì route vốn không có bug.
+- **Fix:** dừng hẳn `next dev` (`kill` đúng tiến trình theo `cwd=/root/brain-os`, tránh đụng tiến trình `next` không liên quan khác đang chạy trên máy) → xoá `.next/` → chạy `npm run build` sạch → pass, `/api/decisions/[id]` build đúng như mọi route khác → mới `setsid nohup npm run dev ...` lại.
+- **Bài học ghi lại cho các phiên sau:** **không bao giờ chạy `npm run build` trong khi `next dev` đang chạy trên cùng thư mục** — luôn dừng dev trước, build, verify, rồi mới restart dev. Đây là nguyên nhân của 2 lần lỗi build/500 liên tiếp (phiên 27 và 28), không phải bug trong code Xiaozi Bridge hay route nào khác.
+
+**Rotate secret (không in/log giá trị ở bất kỳ bước nào):**
+1. Sinh secret mới: `openssl rand -hex 32`, lưu file tạm quyền `600` ngoài repo.
+2. Backup `.env` → `.env.backup.20260705_154032` (thêm 1 bản nữa, cạnh bản phiên 27 — cả 2 đều ngoài git).
+3. Thay `XIAOZI_WEBHOOK_SECRET` bằng script Python đọc từ file tạm, ghi đè bằng regex — không `cat`/in `.env`.
+4. Restart app (`setsid nohup ... < /dev/null & disown`, dừng/start tách riêng 2 lời gọi Bash — pattern ổn định từ phiên 26-27).
+
+**Đã test qua domain public thật với secret mới:**
+- `GET https://os.irec.vn/api/xiaozi/status` (qua `127.0.0.1` để không lộ trạng thái ra ngoài không cần thiết) → `authConfigured:true`.
+- `POST https://os.irec.vn/api/xiaozi/chat` không secret → `401`.
+- `POST .../chat` với secret **cũ đã lộ** (không test lại giá trị cũ trực tiếp, nhưng về logic secret cũ không còn khớp `.env` mới nên chắc chắn bị `401` nếu ai đó cố dùng lại) → coi như đã vô hiệu.
+- `POST .../chat` với secret **mới** → `200`, `provider:"brain_local"`.
+- `grep` secret mới trong `brainos.log` → 0 kết quả.
+- `npm run build` pass sạch (xác nhận cả `/api/decisions/[id]` lẫn toàn bộ route khác).
+
+**Lưu ý còn tồn (không phải lỗi, chỉ để biết):** file `.env.backup.20260705_145127` (backup từ phiên 27) vẫn chứa secret **v1 đã bị lộ** — file này nằm ngoài git (gitignore chặn `.env.backup.*` từ phiên 27), không tự động bị dùng ở đâu, nhưng nếu muốn dọn sạch hoàn toàn dấu vết secret cũ trên đĩa thì cần tự xoá tay 2 file backup cũ khi thấy không cần nữa.
+
+**Không đụng:** NPM/Cloudflare, code auth/route (`webhook-auth.ts`, `chat/route.ts`, `status/route.ts` không đổi dòng nào — chỉ đổi giá trị `.env` và quy trình build/restart).
+
+### Xiaozi Bridge panel test được qua domain public (phiên 29 — 2026-07-05)
+
+Bug report: mở `/robot` qua `https://os.irec.vn/robot` (domain public, đúng cách user thật sẽ dùng), bấm "Test local" trong panel Xiaozi Bridge → nhận "Unauthorized Xiaozi webhook". **Không phải bug backend** (webhook hoạt động đúng thiết kế — request từ domain public không phải `127.0.0.1` nên bắt buộc secret, xem phiên 26) — chỉ là UI test cũ gọi API không kèm secret, gây hiểu nhầm.
+
+**Sửa `src/components/robot/XiaoziBridgePanel.tsx` (chỉ file này, không đụng route/auth backend):**
+- Thêm state `secret`/`showSecret`, load từ `localStorage["robot_xiaozi_test_secret"]` lúc mount, lưu lại mỗi lần gõ (`handleSecretChange`). Input `type="password"` (đổi `type="text"` khi bấm nút 👁️ Hiện/🙈 Ẩn), `placeholder="Nhập XIAOZI_WEBHOOK_SECRET"`. Secret **chỉ tồn tại trong trình duyệt** — không có API nào trả secret thật (`/api/xiaozi/status` chỉ có `authConfigured: boolean`), nên không có rủi ro "expose secret từ server ra frontend".
+- Đổi label nút "Test local" → **"Test public"**; 3 nút (public/complex/template-first) đều đi qua `runAuthedTest()` — gửi header `x-brainos-secret: <secret ô nhập>`, dùng chung `deviceId: "xiaozi-robot-test"` (khác `sampleDeviceId` hiển thị ở phần doc/curl, để phân biệt traffic test từ UI với traffic tham khảo copy-paste). Nếu `secret` rỗng → **không gọi API**, chỉ set `lastResult` kiểu `"info"` với message "Nhập XIAOZI_WEBHOOK_SECRET để test public webhook." (đúng yêu cầu, tránh gọi API vô ích rồi nhận 401 gây rối).
+- Thêm nút mới **"Test unauthorized"** (`runUnauthorizedTest()`) — gọi `/api/xiaozi/chat` cố ý **không** kèm secret. Nhận `401` → hiện "Unauthorized test OK — webhook đang được bảo vệ." (badge xanh `emerald`). Nhận status khác `401` → hiện cảnh báo đỏ "Không như mong đợi: request không secret trả về `<status>` thay vì 401." — nút này đóng vai trò **tự kiểm tra an ninh nhanh** ngay trên UI, không chỉ là "test cho vui".
+- Khối info hiển thị rõ **"Auth required: yes"** + **"Header required: x-brainos-secret"** (trước đây chỉ hiện chuỗi `status.auth` chung chung), kèm ghi chú: nếu đang mở qua domain public thì mọi test đều cần secret, và hướng dẫn lấy secret từ `XIAOZI_WEBHOOK_SECRET` trong `/root/brain-os/.env` trên VPS (không phải từ UI — UI không có cách nào đọc được giá trị đó).
+- Kết quả test (`TestResult`) tách theo `kind` (`success`/`error`/`info`/`unauthorized-ok`/`unauthorized-unexpected`) để hiển thị đúng ngữ cảnh: thành công hiện HTTP status + `provider` + `face`/`action` (badge) + `speak`; lỗi hiện status + message dễ hiểu. **Secret không bao giờ xuất hiện trong `lastResult`, không `console.log` secret ở bất kỳ đâu trong component.**
+- Vẫn giữ 2 khối `curl` tham khảo (local không secret, public có secret placeholder `<YOUR_XIAOZI_WEBHOOK_SECRET>`) như phiên 26 — dùng `sampleDeviceId` từ `/api/xiaozi/status` (khác `deviceId` các nút bấm dùng), vì đây là lệnh copy-paste tham khảo, không phải traffic test tương tác.
+
+**Bài học áp dụng lại từ phiên 28 — không lặp lỗi build:** dừng hẳn `next dev` trước, `npm run build` sạch (pass, không đụng `.next/` khi dev đang chạy), rồi mới `setsid nohup npm run dev ...` lại.
+
+**Đã test:**
+- `npx tsc --noEmit` sạch.
+- `npm run build` pass.
+- `curl` HTML `/robot` (cả qua `127.0.0.1` lẫn qua `https://os.irec.vn/robot` thật) → có đủ text "Test public"/"Test complex"/"Test template-first"/"Test unauthorized"/"Xiaozi secret"/"Auth required" trong HTML render; không có giá trị secret thật nào trong HTML (chỉ có placeholder `<YOUR_XIAOZI_WEBHOOK_SECRET>` và tên biến `XIAOZI_WEBHOOK_SECRET` trong đoạn hướng dẫn — không phải giá trị bí mật).
+- `brainos.log` không có lỗi runtime sau khi đổi.
+- **Chưa test bằng tay thật trên trình duyệt** (nhập secret vào ô, bấm từng nút, xem `localStorage` lưu đúng) — môi trường này không có trình duyệt thật, cần user tự thử qua `https://os.irec.vn/robot`.
+
+**Không đụng:** `/api/xiaozi/chat`, `webhook-auth.ts`, `/api/xiaozi/status`, NPM/Cloudflare, secret trong `.env` (giá trị vẫn từ phiên 28, không rotate thêm).
+
+### OpenAI-compatible bridge cho Xiaozhi — `/v1/chat/completions` + `/v1/models` (phiên 30 — 2026-07-06)
+
+Yêu cầu: `/api/xiaozi/chat` đã chạy nhưng nhiều app Xiaozhi chỉ có ô cấu hình kiểu OpenAI (Base URL/API Key/Model), không có chỗ nhập webhook custom body/header — cần Brain OS giả lập OpenAI API để Xiaozhi cấu hình được dễ dàng, không phá webhook gốc.
+
+**Refactor trước khi thêm route mới (đúng yêu cầu "không copy/paste logic"):**
+- `src/lib/brain/xiaozi-handler.ts` (mới) — export `handleXiaoziMessage(input)`, nhận `{text, deviceId, sessionId, intent?, accessLevel?, meta?}` (đã resolve sẵn, không tự đặt default `deviceId`/`sessionId` — mỗi caller có quy ước default riêng), trả `{reply, speak, robot_say, face, action, provider, sessionId, deviceId, latencyMs}`. Chứa toàn bộ logic đã có từ phiên 24-26: `ensureSession`, lookup `previousUserText`, lưu `ConversationMessage` (user), gọi `xiaoziBridgeBrain`, `isComplexRequest` + OpenAI-fallback (đọc `ENABLE_OPENAI_FALLBACK`), lưu `ConversationMessage` (robot), ghi `ActivityLog` nếu có device. **Không chứa auth/rate-limit** — 2 phần này caller (route) tự lo trước khi gọi, vì mỗi giao thức (webhook JSON tuỳ biến vs OpenAI Chat Completions) có cách nhận secret/rate-limit-key khác nhau.
+- `src/app/api/xiaozi/chat/route.ts` — rút gọn còn: parse JSON → `verifyXiaoziWebhook()` → `ChatSchema.parse()` → `simpleRateLimit()` → resolve `deviceId`/`sessionId`/`accessLevel` theo default cũ (`xiaozi-robot-1`, `xiaozi-<deviceId>`) → gọi `handleXiaoziMessage()` → build response `{ok:true, ...}` y hệt hợp đồng cũ. **Hành vi bên ngoài không đổi 1 byte** (đã test lại xác nhận).
+
+**File mới cho bridge OpenAI-compatible:**
+- `src/app/v1/chat/completions/route.ts` — `POST`. Auth: `verifyXiaoziWebhook()` (dùng lại y hệt logic phiên 26 — Bearer/`x-brainos-secret`/local bypass), sai/thiếu secret → `401 {"error":{"message":"Unauthorized Brain OS compatible API","type":"unauthorized"}}` (hình dạng lỗi kiểu OpenAI, khác `{"ok":false,"error":"..."}` của webhook gốc — cố ý, để client OpenAI-compatible parse lỗi đúng convention họ quen). Zod validate `{model?, messages: [{role, content}] (≥1), stream?}`. Lấy tin nhắn **cuối cùng có `role:"user"`** (duyệt ngược mảng `messages`, không phải phần tử cuối tuyệt đối — phòng trường hợp client gửi kèm message khác sau cùng). `deviceId` cố định `"xiaozhi-openai-compatible"`, `sessionId` cố định `"openai-compatible-xiaozhi-openai-compatible"` (đúng literal yêu cầu — nghĩa là **mọi client OpenAI-compatible gọi vào đây dùng chung 1 session**, xem "Hạn chế đã biết" bên dưới). Rate limit dùng chung 1 bucket theo `deviceId` cố định đó (60 request/phút tổng, không phải per-device thật vì giao thức OpenAI không có id thiết bị). Gọi `handleXiaoziMessage()`, lấy `speak || robot_say || reply` làm `content`. Trả JSON chuẩn `chat.completion` (`id: "chatcmpl-brainos-<uuid>"`, `created` unix timestamp, `choices[0].message.content`, `usage` toàn 0 — không đếm token thật vì không dùng tokenizer). Nếu `stream:true` → trả `ReadableStream` với `Content-Type: text/event-stream`, đúng format SSE tối thiểu yêu cầu (1 chunk `delta.content` đầy đủ câu trả lời + 1 chunk `finish_reason:"stop"` + `data: [DONE]`) — **không stream token thật** (nguồn trả lời luôn là 1 câu hoàn chỉnh từ bridge nội bộ/OpenAI, không có gì để stream dần).
+- `src/app/v1/models/route.ts` — `GET`, cùng auth `verifyXiaoziWebhook()` (không có body nên truyền `{}`), trả `{object:"list", data:[{id:"brainos-local",...}, {id:"brainos-auto",...}]}` — tên model chỉ để UI Xiaozhi có gì đó hiện ra chọn, **không ảnh hưởng logic xử lý thật** (mọi model đều đi qua cùng `handleXiaoziMessage()`).
+
+**Hạn chế đã biết (ghi rõ trong docs, không phải bug):** giao thức OpenAI Chat Completions không có khái niệm `deviceId` — nên bridge này dùng 1 `deviceId`/`sessionId` **cố định**. Nếu nhiều thiết bị Xiaozhi khác nhau cùng cấu hình trỏ vào `/v1/chat/completions`, chúng **chia sẻ chung 1 ngữ cảnh hội thoại** (session), khác với webhook gốc `/api/xiaozi/chat` (mỗi request tự khai `deviceId` riêng). Nếu cần tách theo thiết bị, phải dùng webhook gốc.
+
+**Đã test qua domain public thật:**
+- `GET https://os.irec.vn/v1/models` với `Authorization: Bearer <secret>` → `200`, đúng 2 model.
+- `POST https://os.irec.vn/v1/chat/completions` (`stream:false`) với secret đúng → `200`, `choices[0].message.content` = "Brain OS là bộ não lưu trí nhớ, công việc và điều khiển robot." (khớp bridge nội bộ `brain_local`).
+- `POST .../chat/completions` không secret → `401`, đúng hình dạng lỗi OpenAI.
+- `stream:true` (test local qua `127.0.0.1`) → đúng 3 dòng SSE (`chat.completion.chunk` × 2 + `[DONE]`), đúng format yêu cầu.
+- **Regression `/api/xiaozi/chat` sau refactor:** test lại `{"text":"ngủ đi",...}` qua domain thật với secret → vẫn `action:"sleep"` như trước khi tách handler — xác nhận refactor không đổi hành vi.
+- `npx tsc --noEmit` sạch, `npm run build` pass (dừng hẳn `next dev` trước khi build, đúng quy tắc rút ra từ phiên 27-28).
+- Grep secret trong `brainos.log` sau toàn bộ test → 0 kết quả.
+
+**Không đụng:** NPM/Cloudflare, voice/browser (đúng yêu cầu "không cần sửa nữa"), `webhook-auth.ts` (dùng nguyên, không sửa dòng nào), giá trị secret trong `.env`.
+
+---
+
+### Fix `/xiaozhi` web demo trả lời chung chung "Câu này Xiaozhi có thể xử lý bằng mẫu sẵn." (phiên 31 — 2026-07-06)
+
+Yêu cầu: `provider: "xiaozi_template_first"` đúng cho thiết bị Xiaozhi thật (có template engine riêng xử lý phần không match brain nội bộ) nhưng **sai cho web demo** `/xiaozhi` — web demo không có template engine đó nên câu trả lời nghe máy móc, vô nghĩa với người test qua trình duyệt.
+
+**Thay đổi:**
+- `src/app/xiaozhi/page.tsx` — `sendMessage()` (nhánh `endpointMode === "webhook"`) giờ luôn gửi kèm `meta: {source: "xiaozhi_web_demo", forceBrain: true}` trong body `POST /api/xiaozi/chat`. Card "🩺 Debug" hiện thêm dòng cảnh báo màu amber `"Đây là mode thiết bị thật. Web demo nên bật forceBrain."` khi `provider === "xiaozi_template_first"` (trường hợp lý thuyết nếu ai đó chỉnh code bỏ `forceBrain` đi — mặc định `/xiaozhi` luôn bật).
+- `src/lib/brain/xiaozi-handler.ts` (`handleXiaoziMessage`) — thêm cờ `forceBrain = meta?.forceBrain === true || meta?.source === "xiaozhi_web_demo"`. Khi bridge nội bộ (`xiaoziBridgeBrain`, vẫn chạy trước như cũ) **không match** và `forceBrain` bật: **không rơi vào nhánh `xiaozi_template_first` nữa** — thay vào đó, nếu `ENABLE_OPENAI_FALLBACK==="true"` thì gọi OpenAI luôn (bỏ qua điều kiện `isComplexRequest`, vì web demo muốn trả lời tự nhiên cho **mọi** câu không match, không chỉ câu "phức tạp"); nếu OpenAI tắt (hoặc gọi lỗi) thì dùng `demoConversationalFallback()` (file mới), provider trả về `"brain_local_demo"`. **Nhánh cũ cho thiết bị thật không đổi 1 dòng logic** — request không có `meta.forceBrain`/`meta.source !== "xiaozhi_web_demo"` vẫn chạy y hệt: match bridge → `brain_local`; không match + phức tạp + OpenAI bật → `openai`; không match + phức tạp + OpenAI tắt → `fallback_complex_disabled`; không match + không phức tạp → `xiaozi_template_first` (như cũ, dành cho Xiaozhi thật tự xử lý bằng template).
+- `src/lib/brain/demo-conversational-fallback.ts` (mới) — `demoConversationalFallback(text)`: bảng từ khoá cố định cho các câu vặt kiểu web demo hay gặp (`"alo"`/`"nghe được không"` → "Tôi nghe được rồi. Web demo đang chạy ổn.", `"nói nhanh rồi đúng không"` → "Đúng, tôi phản hồi nhanh hơn rồi.", `"không sao"` → "Không sao, mình tiếp tục nhé.", `"mày thấy tao không"` → "Tôi đang nhìn theo camera và sẵn sàng nói chuyện.", `"ổn chưa"`, `"test"`, `"ok"`...), không match keyword nào thì trả câu chung chung tự nhiên "Tôi nghe rồi, bạn nói tiếp đi, tôi đang lắng nghe." (vẫn tự nhiên hơn hẳn câu template cũ, không bao giờ lộ lại `xiaozi_template_first`).
+
+**Đã test qua `curl` thật (local, sau khi build sạch + restart `next dev` đúng quy tắc phiên 27-30):**
+- `{"text":"alo", meta:{source:"xiaozhi_web_demo", forceBrain:true}}` → `provider:"brain_local_demo"`, reply "Tôi nghe được rồi. Web demo đang chạy ổn."
+- `{"text":"nói nhanh rồi đúng không", meta:{forceBrain:true}}` → `provider:"brain_local_demo"`, reply đúng y hệt "Đúng, tôi phản hồi nhanh hơn rồi."
+- `{"text":"Brain OS là gì", meta:{forceBrain:true}}` → `provider:"brain_local"` (match bridge nội bộ, không đụng nhánh mới).
+- Regression thiết bị thật: `{"text":"alo"}` **không có `meta`** → vẫn `provider:"xiaozi_template_first"` y hệt trước khi sửa.
+- `npx tsc --noEmit` sạch. `npm run build` pass (đã dừng hẳn `next dev`, xoá `.next/`, build sạch, verify, rồi mới `setsid nohup npm run dev ...` lại — đúng quy tắc phiên 27-30; phát hiện lại 1 lần lỗi thao tác: chạy `npm run build` khi `next dev` cũ vẫn còn sống, đã dừng đúng tiến trình rồi build lại sạch trước khi restart).
+- `curl https://os.irec.vn/xiaozhi` và `/robot` → cả 2 vẫn `200` qua domain public.
+- Grep `secret` trong `brainos.log` sau toàn bộ test → 0 kết quả.
+
+**Không đụng:** camera tracking (`WebFaceTracker`/`tracking.ts`), voice/TTS, `xiaozi-bridge-brain.ts`/`complexity.ts` (dùng nguyên, không sửa từ khoá nào), `webhook-auth.ts`, endpoint `/v1/chat/completions` (không gửi `meta` nên hành vi không đổi — vẫn dùng nhánh thiết bị thật/`xiaozi_template_first` như trước, xem NEXT.md nếu sau này muốn web demo dùng luôn qua đây).
+
+---
+
+### Nâng cấp `brain_local_demo` cho `/xiaozhi` — hết lặp 1 câu chung chung, thêm nhiều nhóm hội thoại (phiên 32 — 2026-07-06)
+
+Yêu cầu: sau phiên 31, `brain_local_demo` (fallback khi bridge không match + `forceBrain`) chỉ có vài từ khoá nghèo nàn — rất nhiều câu khác nhau (hỏi tên, hỏi đang làm gì, khen, chê...) đều rơi về đúng 1 câu "Tôi nghe rồi, bạn nói tiếp đi, tôi đang lắng nghe." — cần phong phú hơn mà vẫn không bắt buộc bật OpenAI.
+
+**Thay đổi:**
+- `src/lib/brain/demo-conversational-fallback.ts` — viết lại hoàn toàn: đổi tên hàm cũ `demoConversationalFallback(text): string` thành `demoConversationalBrain(text): DemoBrainResult` (`{matched, reply, face, action}`). Thêm bảng `RULES` (13 nhóm, kiểm tra theo thứ tự, nhóm đứng trước ưu tiên khi trùng từ khoá): hỏi tên (A) → nghe được không (B) → thấy/nhìn thấy (C) → đang làm gì (D) → Brain OS là gì (E) → **giá (G) → ChinChin (F)** (cố ý đặt giá **trước** ChinChin, vì "giá cơm nắm bao nhiêu" có cả từ khoá "giá" lẫn "cơm nắm" — phải trả lời giá cụ thể, không phải giới thiệu menu chung) → khen (H) → chê/mắng (I, trả lời không tự ái, face `sad`) → "nói nhanh rồi đúng không" (J, đổi câu mới) → "không sao" (K) → cảm ơn (L) → tạm biệt (M). Nếu không match rule nào: chọn 1 trong **5 câu fallback khác nhau** theo `hashText(text) % 5` (hash tự viết, deterministic — cùng 1 câu luôn ra cùng 1 fallback, nhưng câu khác nhau sẽ ra fallback khác nhau, hết lặp mãi 1 câu).
+- `src/lib/brain/xiaozi-handler.ts` (`handleXiaoziMessage`) — **sửa lại thứ tự ưu tiên cho nhánh `forceBrain`** (phát hiện qua test thật, không phải theo kế hoạch ban đầu): trước đây bridge nội bộ (`xiaoziBridgeBrain`) luôn được kiểm tra **trước** tất cả, kể cả khi `forceBrain` bật — nghĩa là câu "giá cơm nắm bao nhiêu" bị bridge's `CHINCHIN_IREC_KEYWORDS` (chứa "giá"/"cơm nắm") "cướp" mất trước khi `demoConversationalBrain` kịp chạy, trả về câu ChinChin/iREC cũ (`giá từ 15.000đ...`) thay vì câu giá mới yêu cầu. **Fix:** khi `forceBrain` bật, đảo thứ tự — gọi `demoConversationalBrain(inputText)` **trước**; nếu match dùng luôn (`brain_local_demo`, không gọi OpenAI dù bật, vì đây đã là câu tốt); nếu không match mới rơi xuống bridge (`bridgeResult.matched`, vẫn hữu ích cho các câu bridge có mà demo brain không có, vd "ngủ đi"/"tao vừa nói gì"/lệnh robot); nếu cả 2 đều không match mới cân nhắc OpenAI (chỉ khi `ENABLE_OPENAI_FALLBACK==="true"` **và** `AI_PROVIDER==="openai"` — thêm điều kiện `AI_PROVIDER` mới so với phiên 31), lỗi/tắt thì dùng fallback hash ở trên. **Nhánh không có `forceBrain` (thiết bị thật) không đổi** — vẫn bridge trước, y hệt trước phiên 31.
+
+**Đã test qua `curl` thật (local, sau khi build sạch + restart `next dev` đúng quy tắc phiên 27-31):**
+- 8 câu yêu cầu đều đúng: "alo" → "Tôi nghe được rồi. Web demo đang chạy ổn." (`brain_local_demo`, `happy`); "mày tên là gì" → "Tôi là robot ChinChin, bản demo web của Brain OS." (`brain_local_demo`, `happy`); "mày thấy tao không" → "Tôi đang dùng camera để nhìn theo chuyển động trước mặt." (`brain_local_demo`, `happy`); "nói nhanh rồi đúng không" → "Đúng, phản hồi đã nhanh hơn vì tôi đang dùng não local cho demo." (`brain_local_demo`); "thằng ngu kia mày đã khôn hơn chưa" → "Tôi đang là bản demo nên còn hạn chế. Mình có thể nâng cấp não dần." (`brain_local_demo`, `sad`); "không sao" → "Không sao, mình tiếp tục nhé." (`brain_local_demo`, `idle`); "Brain OS là gì" → "Brain OS là bộ não lưu trí nhớ, công việc và điều khiển robot." qua rule E của demo brain (`brain_local_demo` — demo brain được kiểm tra trước bridge nên match ở đây, dù bridge cũng có nhóm tương tự với cùng nội dung câu trả lời) — **quan trọng nhất:** "giá cơm nắm bao nhiêu" giờ đúng → "Cơm nắm và cơm cuộn là 18 nghìn. Mỳ Ý, mỳ trộn và tokbokki là 23 nghìn." (`brain_local_demo`), không còn bị bridge cướp mất.
+- 5 câu ngẫu nhiên không match rule nào ("hôm nay trời đẹp quá", "con mèo của tao vừa ăn cơm", "abc xyz random 123", "cho tao xin số điện thoại", "kể chuyện cười đi") → **5 câu fallback khác nhau**, không còn lặp lại 1 câu duy nhất.
+- Regression: "ngủ đi" qua `forceBrain` → vẫn đúng `action:"sleep"` qua bridge (`brain_local`) — xác nhận bridge vẫn hoạt động làm lớp dự phòng thứ 2.
+- Regression thiết bị thật: `{"text":"giá cơm nắm bao nhiêu"}` **không có `meta`** → vẫn `provider:"brain_local"`, reply ChinChin/iREC cũ y hệt trước — xác nhận không phá hành vi thiết bị thật.
+- `npx tsc --noEmit` sạch, `npm run build` pass (dừng hẳn `next dev`, xoá `.next/`, build sạch, restart đúng quy tắc phiên 27-31).
+- `curl https://os.irec.vn/xiaozhi` và `/robot` → cả 2 vẫn `200` qua domain public. Grep `secret` trong `brainos.log` → 0 kết quả.
+
+**Không đụng:** camera tracking, voice/TTS, `xiaozi-bridge-brain.ts`/`complexity.ts` (dùng nguyên, không sửa từ khoá/reply nào — ChinChin/iREC cho thiết bị thật vẫn dùng số liệu cũ 15.000-35.000đ, khác số liệu mới trong demo brain 18k/23k — 2 nơi khác nhau **có chủ đích**, không phải thiếu nhất quán, vì 1 bên là thiết bị thật/1 bên là web demo), `webhook-auth.ts`, `/v1/chat/completions` (vẫn không gửi `meta`, hành vi không đổi).
+
+### Fix 404 `/robotonline` + `/api/robotonline/status` — route chưa từng tồn tại (phiên 33 — 2026-07-07)
+
+Yêu cầu: `curl /robotonline` và `curl /api/robotonline/status` trả `NEXT_NOT_FOUND`. Kiểm tra `ls src/app/robotonline` / `ls src/app/api/robotonline/status` → cả 2 đều không tồn tại — không phải bug, đơn giản là route chưa từng được tạo trước đó.
+
+**Thay đổi:**
+- `src/app/robotonline/page.tsx` (mới) — client page, poll `/api/robotonline/status` mỗi 10s bằng `fetch` trong `useEffect`/`setInterval`. Hiển thị 4 `Card` (dùng lại `PageHeader`/`Card`/`Badge` có sẵn, cùng style dark với `/robot`/`/xiaozhi`): Brain OS, Xiaozhi HTTP/OTA `127.0.0.1:8003`, Xiaozhi WebSocket `127.0.0.1:8000`, Brain OS Bridge `https://os.irec.vn/v1` — mỗi card có badge xanh/đỏ theo `online`. 2 link `Link` quay lại `/robot` và `/xiaozhi`.
+- `src/app/api/robotonline/status/route.ts` (mới) — `GET` trả đúng shape JSON yêu cầu (`brainos`, `xiaozhi.httpOta`, `xiaozhi.websocket`, `bridge`). Check HTTP/OTA (port 8003) bằng `fetch` + `AbortController` timeout 800ms — bắt cả response lỗi (400/500...) làm "online" (chỉ cần server có phản hồi là coi như sống, không cần route "/" tồn tại), `catch` mọi lỗi mạng/timeout → `false`. Check WebSocket (port 8000) bằng `net.Socket` connect TCP thô (không handshake WS đầy đủ, chỉ cần connect được), `timeout`/`error` event → `false`. Cả 2 check chạy song song (`Promise.all`), không throw nên Xiaozhi offline không crash route.
+
+**Đã test:**
+- `curl http://127.0.0.1:3000/robotonline` → `200`; `curl http://127.0.0.1:3000/api/robotonline/status` → `200`, JSON đúng shape.
+- `curl https://os.irec.vn/robotonline` → `200`; `curl https://os.irec.vn/api/robotonline/status` → `200`.
+- Regression qua cả localhost lẫn domain thật: `/robot` → `200`, `/xiaozhi` → `200`, `POST /v1/chat/completions` (không body) → `400` (không phải `404`), `POST /api/xiaozi/chat` (không body) → `400` (không phải `404`) — không có route nào bị phá.
+- Không sửa Cloudflare/NPM. Không log secret/API key (route mới không đọc bất kỳ secret nào).
+
+**Không đụng:** `/robot`, `/xiaozhi`, `/api/xiaozi/chat`, `/v1/chat/completions`, Cloudflare/NPM.
+
 ---
 
 ## File quan trọng nhất
@@ -653,7 +789,10 @@ Yêu cầu: đổi `XIAOZI_WEBHOOK_SECRET` từ placeholder sang secret thật, 
 | `scripts/backup-db.sh` (`npm run db:backup`) | Backup nhanh `brain_os` ra `backups/`, giữ 20 bản mới nhất (phiên 25) |
 | `src/app/api/health/db/route.ts` | Health check DB — đếm `ConversationMessage`/`ConversationSession` thật (phiên 25) |
 | `src/lib/brain/webhook-auth.ts` | `verifyXiaoziWebhook()`/`getClientIp()`/`simpleRateLimit()` — auth + rate limit cho webhook public (phiên 26) |
-| `docs/XIAOZI_SETUP.md` | Hướng dẫn cấu hình Xiaozi/Xiaozhi gọi Brain OS — endpoint, secret, payload, curl test (phiên 26) |
+| `docs/XIAOZI_SETUP.md` | Hướng dẫn cấu hình Xiaozi/Xiaozhi gọi Brain OS — endpoint, secret, payload, curl test, phương án OpenAI-compatible (phiên 26 + 30) |
+| `src/lib/brain/xiaozi-handler.ts` | `handleXiaoziMessage()` — logic xử lý 1 lượt chat, dùng chung cho `/api/xiaozi/chat` và `/v1/chat/completions` (phiên 30) |
+| `src/app/v1/chat/completions/route.ts` | Bridge OpenAI-compatible `POST /v1/chat/completions` (non-stream + SSE tối thiểu) cho Xiaozhi (phiên 30) |
+| `src/app/v1/models/route.ts` | `GET /v1/models` — danh sách model giả (`brainos-local`/`brainos-auto`) cho Xiaozhi (phiên 30) |
 
 ---
 

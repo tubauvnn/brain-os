@@ -2,19 +2,82 @@
 
 **Đọc STATE.md trước để biết đã làm gì.**
 
-## -1. (Cập nhật — phiên 27, 2026-07-05) ✅ Secret thật đã set + domain đã sống — bước tiếp theo: nhập endpoint + secret vào Xiaozi/Xiaozhi thật
+## -6. (Mới — phiên 33, 2026-07-07) ✅ Fix 404 `/robotonline` + `/api/robotonline/status`
 
-**Đã xử lý xong (phiên 25-27):** Postgres bền dữ liệu qua named volume (phiên 25). Webhook `/api/xiaozi/chat` có auth + rate limit (phiên 26). **Phiên 27: domain `https://os.irec.vn` đã hoạt động thật** (`/`, `/robot`, `/tablet`, `/api/xiaozi/status` đều `200` qua curl thật — không rõ ai/khi nào sửa NPM, chỉ xác nhận lại, không đụng gì tới cấu hình NPM/Cloudflare) **và `XIAOZI_WEBHOOK_SECRET` trong `.env` đã được đổi từ placeholder sang secret thật** (`openssl rand -hex 32`, giá trị không ghi ở đâu ngoài `.env` trên VPS). Đã test qua đúng domain public thật: không secret → `401`, đúng secret → `200`/`provider:"brain_local"`.
+**Đã xử lý xong (phiên 33):** route `/robotonline` (page) và `/api/robotonline/status` (API) chưa từng được tạo — đó là lý do `curl` trả `NEXT_NOT_FOUND`, không phải bug ẩn. Đã tạo `src/app/robotonline/page.tsx` (4 card trạng thái: Brain OS, Xiaozhi HTTP/OTA `127.0.0.1:8003`, Xiaozhi WebSocket `127.0.0.1:8000`, Brain OS Bridge `/v1`, tự poll mỗi 10s, link quay lại `/robot`/`/xiaozhi`) và `src/app/api/robotonline/status/route.ts` (check HTTP/OTA qua `fetch` timeout 800ms, check WebSocket qua `net.Socket` TCP connect, không crash nếu Xiaozhi offline). Đã test cả 4 endpoint (`127.0.0.1:3000` và `https://os.irec.vn`, cả page lẫn API) → tất cả `200`. Regression `/robot`, `/xiaozhi`, `/api/xiaozi/chat`, `/v1/chat/completions` → không đổi hành vi, không có `404` mới. Không đụng Cloudflare/NPM, không log secret. Xem chi tiết STATE.md phiên 33.
 
-**Bước tiếp theo cụ thể (chỉ còn việc ngoài phạm vi code Brain OS):**
-1. **Nhập vào cấu hình webhook của thiết bị Xiaozi/Xiaozhi thật:**
-   - Endpoint: `https://os.irec.vn/api/xiaozi/chat`
-   - Header: `x-brainos-secret: <giá trị secret thật trong .env trên VPS>` — lấy trực tiếp từ `.env` (`XIAOZI_WEBHOOK_SECRET`) khi cấu hình, phiên làm việc này không ghi lại giá trị đó ở bất kỳ đâu khác.
-   - Theo tài liệu/app đi kèm phần cứng Xiaozi/Xiaozhi (ngoài phạm vi Brain OS) — **chưa test được bước này** vì không có phần cứng thật trong môi trường làm việc hiện tại.
-2. Danh sách từ khoá 5 nhóm local (`xiaozi-bridge-brain.ts`) và complexity (`complexity.ts`) đang cố định cứng theo đúng yêu cầu ban đầu — nếu dùng thật thấy thiếu case hoặc quá nhạy, báo lại để chỉnh danh sách, đừng tự đoán thêm case ngoài phạm vi đã thống nhất.
-3. Câu trả lời ChinChin/iREC (menu/giá) đang là data tĩnh hard-code trong code — nếu giá/menu thật đổi thường xuyên, cân nhắc chuyển qua đọc từ DB (`Memory`/model mới) thay vì sửa code mỗi lần.
-4. Muốn bật OpenAI thật cho câu phức tạp: đổi `ENABLE_OPENAI_FALLBACK="true"` trong `.env` (đang mặc định `"false"`), không cần đổi code.
-5. Có `.env.backup.20260705_145127` từ lúc đổi secret (ngoài git, chỉ nằm trên VPS) — có thể xoá khi chắc chắn secret mới hoạt động ổn định, hoặc giữ lại làm lưới an toàn.
+**Việc còn lại (không khẩn cấp):**
+1. Card trạng thái hiện chỉ tự poll, chưa có nút "refresh ngay" thủ công — thêm nếu cần test nhanh bằng tay.
+2. Chưa test bằng mắt trên trình duyệt thật (môi trường này chỉ test được qua `curl`) — cần user tự mở `https://os.irec.vn/robotonline` xác nhận badge xanh/đỏ hiện đúng, link quay lại `/robot`/`/xiaozhi` hoạt động.
+
+## -5. (Mới — 2026-07-06) ✅ Đã cài Xiaozhi THẬT (xiaozhi-esp32-server) trên VPS, đã nối về Brain OS — chi tiết đầy đủ ở `docs/XIAOZHI_REAL_INSTALL_RESULT.md`
+
+**Trạng thái:** `xiaozhi-esp32-server` (server thật, chế độ server-only, Docker) đang chạy tại `/opt/xiaozhi/deploy`, LLM trỏ về Brain OS (`BrainOSLLM`, `type: openai`, `base_url: https://os.irec.vn/v1`) — đã verify 2 cách độc lập (curl thẳng Brain OS `200` + `performance_tester_llm.py` bên trong container nhận được reply thật từ Brain OS). `py-xiaozhi` (client) đã cài Python deps thành công trong venv (`/opt/py-xiaozhi/.venv`) nhưng **không chạy voice thật được trên VPS này** — thiếu PortAudio/libEGL/libopus (thư viện hệ thống, không phải Python package), cố ý không `apt install` vì VPS không có mic/loa/màn hình thật để dùng. Đọc **`docs/XIAOZHI_REAL_INSTALL_RESULT.md`** để biết đầy đủ 10 mục (repo đã clone, port, cấu hình, lệnh chạy lại...).
+
+**Việc tiếp theo cụ thể (theo đúng thứ tự ưu tiên):**
+1. **Quyết định cách mở port cho test từ xa** — hiện `xiaozhi-esp32-server` chỉ bind `127.0.0.1:8000`/`127.0.0.1:8003` (an toàn, đã thống nhất với user), nên **chỉ test được từ chính VPS**. Muốn test bằng laptop/tablet thật qua mạng: hoặc SSH tunnel (`ssh -L 8000:localhost:8000 -L 8003:localhost:8003 root@42.96.12.122`, không cần đổi gì trên VPS), hoặc tự đổi `/opt/xiaozhi/deploy/docker-compose.yml` sang bind `0.0.0.0` rồi `docker compose up -d` lại (raw IP:port, không qua NPM/Cloudflare, không có TLS/auth — cân nhắc kỹ trước khi làm vì VPS này không có firewall host-level).
+2. **Chạy `py-xiaozhi` trên máy có mic+loa thật** (laptop/tablet, không phải VPS) — `git clone https://github.com/huangjunsen0406/py-xiaozhi.git` (hoặc copy từ `/opt/py-xiaozhi`), `pip install -r requirements.txt` (thường chạy được ngay trên desktop OS vì có sẵn PortAudio/GUI), rồi sửa `WEBSOCKET_URL`/`OTA_VERSION_URL` trong config trỏ vào server đã dựng (theo cách đã chọn ở bước 1).
+3. **ESP32 thật** (`78/xiaozhi-esp32`) — chỉ cần khi có phần cứng robot thật, chưa làm, chưa cần làm bây giờ.
+4. Nếu muốn chế độ "full module" (web admin quản lý nhiều thiết bị) thay vì server-only hiện tại — cần dựng thêm MySQL+Redis+`manager-api`+`manager-web`, phức tạp hơn nhiều, **chưa cần thiết** cho mục tiêu demo hiện tại.
+5. `data/.config.yaml` (chứa secret) nằm tại `/opt/xiaozhi/deploy/data/.config.yaml` trên VPS, quyền `600`, **không** nằm trong git repo `brain-os` hay bất kỳ repo nào — không cần lo git commit nhầm, nhưng nếu build lại VPS/di chuyển server, nhớ backup riêng file này (hoặc tạo lại theo mẫu trong `docs/XIAOZHI_REAL_INSTALL_RESULT.md` mục 7).
+
+## -4. (Cập nhật — phiên 32, 2026-07-06) ✅ `brain_local_demo` cho `/xiaozhi` hết lặp 1 câu chung chung, trả lời phong phú hơn
+
+**Đã xử lý xong (phiên 32):** `demoConversationalFallback()` cũ (nghèo từ khoá, dễ rơi về 1 câu chung chung) đổi thành `demoConversationalBrain()` (`src/lib/brain/demo-conversational-fallback.ts`) — 13 nhóm câu hội thoại phổ biến (tên, nghe/thấy, đang làm gì, Brain OS, giá/ChinChin, khen/chê, nói nhanh, không sao, cảm ơn, tạm biệt) + 5 câu fallback khác nhau chọn theo hash khi không match nhóm nào (hết lặp mãi 1 câu). **Phát hiện + sửa 1 bug thứ tự trong lúc test:** bridge nội bộ (`xiaoziBridgeBrain`) trước đó luôn chạy trước demo brain kể cả khi `forceBrain` bật, nên các từ khoá trùng (vd "giá"/"cơm nắm") bị bridge "cướp" mất, trả lời cũ thay vì câu mới. Đã đảo thứ tự: `forceBrain` bật → demo brain chạy trước, bridge chỉ còn là lớp dự phòng cho các câu demo brain không có (lệnh robot, "tao vừa nói gì"...). Xem chi tiết + toàn bộ test STATE.md phiên 32.
+
+**Việc còn lại (không khẩn cấp):**
+1. Danh sách `RULES` trong `demoConversationalBrain()` vẫn là từ khoá cố định — nếu test tay trên `https://os.irec.vn/xiaozhi` thấy câu tự nhiên hay gặp bị rơi vào 1 trong 5 fallback (nghĩa là chưa có rule), báo lại để bổ sung, đừng tự đoán thêm ngoài phạm vi đã thống nhất.
+2. Số liệu giá ChinChin trong demo brain (18k/23k) khác số liệu trong bridge nội bộ cho thiết bị thật (15k-35k, `xiaozi-bridge-brain.ts`) — **có chủ đích, 2 nơi khác nhau cho 2 mục đích khác nhau** (demo vs thiết bị thật), không phải lỗi thiếu đồng bộ. Nếu sau này muốn 2 nơi khớp nhau, cần quyết định số liệu chung rồi sửa cả 2 file.
+3. Test tay trên trình duyệt thật `https://os.irec.vn/xiaozhi` (môi trường này chỉ test được qua `curl`) — xác nhận card Debug hiện đúng `brain_local_demo` cho các câu mới, mặt robot đổi đúng biểu cảm (happy/sad/idle theo `face` trả về), giọng TTS đọc câu tự nhiên, camera tracking không bị ảnh hưởng.
+
+## -3. (Cập nhật — phiên 31, 2026-07-06) ✅ `/xiaozhi` web demo hết trả lời chung chung "Câu này Xiaozhi có thể xử lý bằng mẫu sẵn."
+
+**Đã xử lý xong (phiên 31):** `/xiaozhi` giờ luôn gửi `meta: {source:"xiaozhi_web_demo", forceBrain:true}` khi gọi `/api/xiaozi/chat` → handler không còn rơi vào `xiaozi_template_first` cho web demo nữa, thay vào đó thử `brain_local` (bridge nội bộ) trước, rồi OpenAI nếu bật, cuối cùng là `demoConversationalFallback()` mới (provider `brain_local_demo`) cho các câu vặt (alo, ok, test, không sao...). Thiết bị Xiaozhi thật (không gửi `meta.forceBrain`) vẫn nhận `xiaozi_template_first` y hệt trước. Xem chi tiết + kết quả test STATE.md phiên 31.
+
+**Việc còn lại (không khẩn cấp, chỉ làm nếu cần):**
+1. `demoConversationalFallback()` (`src/lib/brain/demo-conversational-fallback.ts`) đang là danh sách từ khoá cố định nhỏ, giống style `xiaozi-bridge-brain.ts` — nếu test tay trên `https://os.irec.vn/xiaozhi` thấy thiếu case hay câu trả lời nghe gượng, báo lại để bổ sung, đừng tự đoán thêm ngoài phạm vi đã thống nhất.
+2. `/v1/chat/completions` (bridge OpenAI-compatible, phiên 30) **chưa** gửi `meta.forceBrain` — nếu sau này muốn dùng chính bridge đó làm web demo (thay vì `/xiaozhi` gọi `/api/xiaozi/chat` trực tiếp), cần quyết định có nên mặc định `forceBrain:true` luôn ở đó hay không (ảnh hưởng cả thiết bị Xiaozhi thật nếu họ cũng trỏ vào `/v1/chat/completions` — cần cân nhắc kỹ trước khi đổi).
+3. Test tay trên trình duyệt thật `https://os.irec.vn/xiaozhi` (môi trường này chỉ test được qua `curl`) — xác nhận: gõ "alo" → provider `brain_local_demo` hiện đúng trong card Debug, giọng đọc TTS phát câu tự nhiên, camera tracking (nếu bật) không bị ảnh hưởng.
+
+## -2. (Mới — 2026-07-06) ⚠️ Đã thử cài py-xiaozhi để demo — phát hiện quan trọng: py-xiaozhi KHÔNG có ô cấu hình OpenAI base_url/api_key/model cho luồng chat chính
+
+**Đã làm:** clone `https://github.com/huangjunsen0406/py-xiaozhi.git` vào `/opt/py-xiaozhi` (ngoài git repo Brain OS, không đụng gì tới `/root/brain-os`). Đọc kỹ `documents/docs/zh/guide/配置说明.md` (tài liệu cấu hình chính thức), `src/utils/config_manager.py` (nơi định nghĩa `DEFAULT_CONFIG`), `main.py`, và grep toàn bộ source tìm `base_url`/`api_key`/`openai`/`llm`/`server`/`websocket`. **Chưa chạy `pip install`/`uv sync`** (đúng yêu cầu "không cài nặng nếu chưa rõ") vì phát hiện dưới đây đã đủ để biết hướng ban đầu không khớp trước khi tốn thời gian cài.
+
+**Phát hiện (quan trọng, thay đổi cách tiếp cận):**
+- py-xiaozhi là **client** cho giao thức riêng của hệ sinh thái Xiaozhi (audio Opus qua WebSocket/MQTT) — cấu hình mạng chỉ có `SYSTEM_OPTIONS.NETWORK.WEBSOCKET_URL`/`OTA_VERSION_URL`/`MQTT_INFO`, trỏ tới **1 "xiaozhi-server"** (mặc định là cloud chính chủ `api.tenclass.net`/`xiaozhi.me`, hoặc 1 server tự host khác cùng giao thức, ví dụ project `xiaozhi-esp32-server`). **Không có field `base_url`/`api_key`/`model` nào cho luồng chat/LLM chính** — toàn bộ STT/LLM/TTS xử lý ở phía server đó, py-xiaozhi chỉ lo mic/loa/giao thức.
+- Field `api_key`/`base_url` **duy nhất** tìm thấy trong toàn bộ source (`CAMERA.VLapi_key`, `CAMERA.Local_VL_url`, `src/mcp/tools/camera/vl_camera.py`) chỉ dùng cho **tool nhận diện hình ảnh qua camera** (dùng SDK `openai` Python trỏ mặc định vào Zhipu AI `open.bigmodel.cn`) — hoàn toàn tách biệt với hội thoại giọng nói chính, cần webcam thật, và gửi `content` dạng mảng có `image_url` (khác hẳn `content: string` mà `/v1/chat/completions` của Brain OS đang nhận) — **không phải chỗ để trỏ vào Brain OS cho demo voice**.
+- Kết luận: muốn Xiaozhi (qua py-xiaozhi) thật sự nói chuyện qua Brain OS, cần **thêm 1 tầng nữa** — tự host 1 "xiaozhi-server" (vd `xiaozhi-esp32-server`, project khác, chưa tìm hiểu) cấu hình LLM provider của **server đó** trỏ vào `https://os.irec.vn/v1`, rồi mới trỏ `WEBSOCKET_URL` của py-xiaozhi vào server tự host này. Đây là việc **lớn hơn nhiều** so với "chỉ điền Base URL/API Key/Model" như giả định ban đầu.
+- **VPS này không có phần cứng âm thanh** (`aplay`/`arecord` không tồn tại, `/proc/asound/cards` không có) — py-xiaozhi cần `sounddevice`/PortAudio + mic/loa thật để hoạt động đúng nghĩa, nên dù có ghép được server ở trên, **VPS chỉ test được kết nối/cấu hình, không test được voice thật**. Cần tablet/laptop có mic+loa thật cho việc đó.
+- Dependencies của py-xiaozhi khá nặng (`PySide6`, `sherpa-onnx` + model wake-word, `opuslib`, `sounddevice`) — xác nhận đúng lo ngại "không cài nặng nếu chưa rõ" là hợp lý.
+
+**Cần quyết định (việc chỉ user quyết được, không đoán tiếp):**
+1. Có muốn tự host thêm 1 "xiaozhi-server" (project riêng, ví dụ `xiaozhi-esp32-server`) để py-xiaozhi/ESP32 thật có thể nói chuyện qua Brain OS không? Đây là hạ tầng mới, tốn công sức đáng kể, ngoài phạm vi những gì đã làm tới giờ.
+2. Hay chấp nhận demo bằng phương án **đã chạy sẵn, không cần thêm gì**: `/robot` (web simulator của chính Brain OS, đã có chat/voice/TTS qua trình duyệt, xem STATE.md phiên 20-23) — đây là **demo không-ESP32 nhanh nhất hiện có**, không cần cài thêm py-xiaozhi/server nào.
+3. Nếu vẫn muốn thử py-xiaozhi cho vui (không nhất thiết nói chuyện được với Brain OS), có thể cài + chạy `python main.py --mode cli --skip-activation` để xem UI/luồng activation, nhưng cần máy có mic/loa thật (không phải VPS này) và vẫn sẽ nói chuyện với cloud xiaozhi.me mặc định trừ khi tự host server riêng.
+
+**Phương án demo hiện tại (không cần ESP32):**
+- **`/robot` (khuyên dùng, đã chạy sẵn):** `https://os.irec.vn/robot` — chat/voice/TTS qua trình duyệt, không cần cài gì thêm, không cần phần cứng ngoài mic/loa của máy đang mở trình duyệt.
+- **py-xiaozhi:** đã clone ở `/opt/py-xiaozhi`, nhưng cần quyết định #1 ở trên trước khi đầu tư cài đặt/host server, và cần máy có mic/loa thật (không phải VPS) để test voice.
+
+**Phương án hardware sau (khi có thiết bị thật):** 78 / xiaozhi-esp32 / Lily Box — chưa nghiên cứu chi tiết, để dành khi có phần cứng thật trong tay.
+
+## -1. (Cập nhật — phiên 30, 2026-07-06) ✅ Có bridge OpenAI-compatible cho Xiaozhi — bước tiếp theo: nhập Base URL/API Key/Model vào Xiaozhi thật
+
+**Đã xử lý xong (phiên 25-30):** Postgres bền dữ liệu (phiên 25). Webhook auth + rate limit (phiên 26). Domain `https://os.irec.vn` đã sống (phiên 27). Secret đã rotate + build đã sạch (phiên 28). Panel `/robot` test được qua domain public (phiên 29). **Phiên 30: thêm `POST /v1/chat/completions` + `GET /v1/models`** — bridge giả lập OpenAI API, dùng chung logic với `/api/xiaozi/chat` qua `handleXiaoziMessage()` (đã tách vào `src/lib/brain/xiaozi-handler.ts`). Đây là **phương án dễ nhất** nếu app Xiaozhi chỉ có ô cấu hình kiểu OpenAI (Base URL/API Key/Model) — xem `docs/XIAOZI_SETUP.md` mục #0.
+
+**⚠️ Quy tắc quan trọng cho các phiên sau (rút ra từ nhiều lần dính lỗi build liên tiếp, phiên 27-28, áp dụng lại thành công ở phiên 30):** **không bao giờ chạy `npm run build` khi `next dev` đang chạy trên cùng thư mục** — luôn: dừng `next dev` → (tuỳ chọn) xoá `.next/` nếu nghi ngờ cache hỏng → `npm run build` → verify pass → mới `setsid nohup npm run dev ...` lại.
+
+**Bước tiếp theo cụ thể:**
+1. **Nhập cấu hình vào Xiaozhi thật — chọn 1 trong 2 phương án:**
+   - **Phương án A (khuyên dùng nếu Xiaozhi có ô kiểu OpenAI):** Base URL `https://os.irec.vn/v1`, API Key = giá trị `XIAOZI_WEBHOOK_SECRET` trong `.env` trên VPS, Model `brainos-local`. Xem `docs/XIAOZI_SETUP.md` mục #0. **Lưu ý:** mọi thiết bị gọi qua phương án này dùng chung 1 session cố định (không tách theo từng máy) — chấp nhận được nếu chỉ có 1 thiết bị Xiaozhi, cần cân nhắc nếu có nhiều.
+   - **Phương án B (webhook gốc, tách session theo thiết bị):** endpoint `https://os.irec.vn/api/xiaozi/chat`, header `x-brainos-secret: <secret>`. Xem `docs/XIAOZI_SETUP.md` mục #1-10.
+   - **Cả 2 phương án đều chưa test được với phần cứng Xiaozhi thật** (không có thiết bị trong môi trường làm việc này).
+   - **Tránh để secret hiện lại ra terminal/screenshot/chat log** khi nhập (đây chính là lý do phải rotate ở phiên 28) — đọc trực tiếp `.env` qua SSH riêng tư.
+2. **User tự test panel `/robot` bằng tay thật trên trình duyệt** (chưa làm được vì môi trường này không có trình duyệt) — xem hướng dẫn ở STATE.md phiên 29.
+3. Danh sách từ khoá 5 nhóm local (`xiaozi-bridge-brain.ts`) và complexity (`complexity.ts`) đang cố định cứng theo đúng yêu cầu ban đầu — nếu dùng thật thấy thiếu case hoặc quá nhạy, báo lại để chỉnh danh sách, đừng tự đoán thêm case ngoài phạm vi đã thống nhất.
+4. Câu trả lời ChinChin/iREC (menu/giá) đang là data tĩnh hard-code trong code — nếu giá/menu thật đổi thường xuyên, cân nhắc chuyển qua đọc từ DB (`Memory`/model mới) thay vì sửa code mỗi lần.
+5. Muốn bật OpenAI thật cho câu phức tạp: đổi `ENABLE_OPENAI_FALLBACK="true"` trong `.env` (đang mặc định `"false"`), không cần đổi code — áp dụng cho cả 2 endpoint (`/api/xiaozi/chat` và `/v1/chat/completions`) vì dùng chung handler.
+6. Có 2 file `.env.backup.<timestamp>` (phiên 27 + 28, ngoài git). **File backup phiên 27 vẫn chứa secret v1 đã lộ** — cân nhắc tự xoá tay 2 file này khi chắc chắn secret hiện tại hoạt động ổn định, để không giữ dấu vết secret cũ trên đĩa.
 
 ## 0. (Cập nhật — phiên 18, 2026-07-05) Đăng nhập lại Codex CLI và Gemini CLI — chỉ còn ảnh hưởng chế độ `deep`
 
