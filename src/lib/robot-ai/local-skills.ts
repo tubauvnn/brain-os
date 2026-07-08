@@ -1,8 +1,19 @@
 import type { RobotChatResult } from "./types";
+import { DEMO_SCENARIOS, type ScenarioReply } from "./demo-scenarios";
+import { checkLanguageGuard } from "./language-guard";
 
-// Local skill engine — trả lời ngay cho các câu lệnh/câu hỏi phổ biến, không tốn
-// round-trip gọi OpenAI. Chạy TRƯỚC provider AI trong /api/robot/chat; chỉ những
-// câu không khớp skill nào mới rơi xuống OpenAI.
+// Local skill engine v2 — trả lời ngay cho các câu lệnh/câu hỏi phổ biến, không
+// tốn round-trip gọi OpenAI. Chạy TRƯỚC provider AI trong /api/robot/chat; chỉ
+// những câu không khớp bước nào mới rơi xuống OpenAI.
+//
+// Thứ tự xử lý (matchLocalSkill):
+//   1. normalize text
+//   2. language guard (chặn script lạ, xem language-guard.ts)
+//   3. demo scenarios (greet_customer/introduce/sales_demo/turn_left/turn_right/sleep/wake)
+//   4. robot commands (lệnh rời rạc không phải "màn trình diễn": nhìn tôi, cười,
+//      dừng, demo gia đình/bảo vệ/robot, test mic)
+//   5. identity fallback (biến thể hỏi danh tính không khớp keyword ở bước 3)
+//   6. trả null — để caller (route.ts) gọi OpenAI
 
 function stripDiacritics(text: string): string {
   return text
@@ -22,73 +33,26 @@ function includesPhrase(normalizedText: string, phrase: string): boolean {
   return ` ${normalizedText} `.includes(` ${phrase} `);
 }
 
-type LocalSkillReply = Omit<RobotChatResult, "ok" | "provider" | "model">;
+function matchKeywords(normalized: string, keywords: string[]): boolean {
+  return keywords.some((keyword) => includesPhrase(normalized, keyword));
+}
 
-type LocalSkill = {
-  id: string;
-  keywords: string[];
-  reply: LocalSkillReply;
-};
+function toResult(reply: ScenarioReply): RobotChatResult {
+  return { ok: true, provider: "local", ...reply };
+}
 
-const LOCAL_SKILLS: LocalSkill[] = [
-  {
-    id: "greet",
-    keywords: ["xin chao", "hello", "chao chuoi", "chuoi oi"],
-    reply: {
-      reply: "Xin chào, mình là Chuối đây.",
-      mood: "happy",
-      action: "greet",
-      eyes: "center",
-      mouth: "speaking",
-    },
-  },
-  {
-    id: "introduce",
-    keywords: ["may la ai", "ban la ai", "cau la ai", "gioi thieu"],
-    reply: {
-      reply: "Mình là Chuối, robot demo của Brain OS.",
-      mood: "happy",
-      action: "introduce",
-      eyes: "center",
-      mouth: "speaking",
-    },
-  },
-  {
-    id: "greet_customer",
-    keywords: ["chao khach"],
-    reply: {
-      reply: "Xin chào, rất vui được gặp bạn. Mời bạn thử nói chuyện với Chuối nhé.",
-      mood: "happy",
-      action: "greet",
-      eyes: "center",
-      mouth: "speaking",
-      hardwareCommand: { type: "face", command: "greet" },
-    },
-  },
-  {
-    id: "turn_left",
-    keywords: ["quay trai", "re trai"],
-    reply: {
-      reply: "Ok, Chuối quay trái.",
-      mood: "idle",
-      action: "turn_left",
-      eyes: "left",
-      mouth: "speaking",
-      hardwareCommand: { type: "motor", command: "turn_left" },
-    },
-  },
-  {
-    id: "turn_right",
-    keywords: ["quay phai", "re phai"],
-    reply: {
-      reply: "Ok, Chuối quay phải.",
-      mood: "idle",
-      action: "turn_right",
-      eyes: "right",
-      mouth: "speaking",
-      hardwareCommand: { type: "motor", command: "turn_right" },
-    },
-  },
+function matchDemoScenario(normalized: string): RobotChatResult | null {
+  for (const scenario of DEMO_SCENARIOS) {
+    if (matchKeywords(normalized, scenario.keywords)) return toResult(scenario.reply);
+  }
+  return null;
+}
+
+type RobotCommand = { id: string; keywords: string[]; reply: ScenarioReply };
+
+// Lệnh rời rạc không phải "màn demo" (không cần câu dài/gợi ý bước tiếp theo) —
+// vẫn trả structured đầy đủ, chỉ ngắn gọn hơn scenario.
+const ROBOT_COMMANDS: RobotCommand[] = [
   {
     id: "look_at_me",
     keywords: ["nhin toi", "nhin minh"],
@@ -99,6 +63,7 @@ const LOCAL_SKILLS: LocalSkill[] = [
       eyes: "track",
       mouth: "smile",
       hardwareCommand: { type: "servo", command: "look_center" },
+      brainNote: "local command",
     },
   },
   {
@@ -110,6 +75,7 @@ const LOCAL_SKILLS: LocalSkill[] = [
       action: "smile",
       eyes: "center",
       mouth: "smile",
+      brainNote: "local command",
     },
   },
   {
@@ -122,41 +88,7 @@ const LOCAL_SKILLS: LocalSkill[] = [
       eyes: "center",
       mouth: "idle",
       hardwareCommand: { type: "motor", command: "stop" },
-    },
-  },
-  {
-    id: "sleep",
-    keywords: ["ngu di", "di ngu"],
-    reply: {
-      reply: "Chuối ngủ một chút nhé.",
-      mood: "sleepy",
-      action: "sleep",
-      eyes: "center",
-      mouth: "sleep",
-      hardwareCommand: { type: "face", command: "sleep" },
-    },
-  },
-  {
-    id: "wake",
-    keywords: ["thuc day", "day di"],
-    reply: {
-      reply: "Chuối dậy rồi đây.",
-      mood: "happy",
-      action: "wake",
-      eyes: "center",
-      mouth: "speaking",
-      hardwareCommand: { type: "face", command: "wake" },
-    },
-  },
-  {
-    id: "demo_sales",
-    keywords: ["demo ban hang"],
-    reply: {
-      reply: "Xin chào, hôm nay Chuối có thể chào khách, giới thiệu món và nhắc chương trình mini game.",
-      mood: "happy",
-      action: "demo_sales",
-      eyes: "center",
-      mouth: "speaking",
+      brainNote: "local command",
     },
   },
   {
@@ -168,6 +100,8 @@ const LOCAL_SKILLS: LocalSkill[] = [
       action: "demo_family",
       eyes: "center",
       mouth: "speaking",
+      suggestedNextActions: ["Chào khách", "Demo bán hàng"],
+      brainNote: "local command",
     },
   },
   {
@@ -179,6 +113,8 @@ const LOCAL_SKILLS: LocalSkill[] = [
       action: "demo_security",
       eyes: "center",
       mouth: "speaking",
+      suggestedNextActions: ["Quay trái", "Quay phải"],
+      brainNote: "local command",
     },
   },
   {
@@ -190,6 +126,8 @@ const LOCAL_SKILLS: LocalSkill[] = [
       action: "demo_robot",
       eyes: "track",
       mouth: "smile",
+      suggestedNextActions: ["Quay trái", "Quay phải", "Chào khách"],
+      brainNote: "local command",
     },
   },
   {
@@ -201,20 +139,43 @@ const LOCAL_SKILLS: LocalSkill[] = [
       action: "none",
       eyes: "center",
       mouth: "idle",
+      brainNote: "local command",
     },
   },
 ];
 
-// Khớp theo thứ tự khai báo — skill khai báo trước (cụm cụ thể hơn, vd "chao khach")
-// được ưu tiên trước skill khai báo sau có cụm chung hơn (vd "xin chao").
+function matchRobotCommand(normalized: string): RobotChatResult | null {
+  for (const command of ROBOT_COMMANDS) {
+    if (matchKeywords(normalized, command.keywords)) return toResult(command.reply);
+  }
+  return null;
+}
+
+// Biến thể hỏi danh tính không khớp keyword của scenario "introduce" (bước 3)
+// — lưới an toàn thứ 2, dùng lại đúng câu trả lời của introduce.
+const IDENTITY_FALLBACK_KEYWORDS = ["ten la gi", "may la robot gi", "day la ai", "may la gi"];
+
+function matchIdentityFallback(normalized: string): RobotChatResult | null {
+  if (!matchKeywords(normalized, IDENTITY_FALLBACK_KEYWORDS)) return null;
+  const introduce = DEMO_SCENARIOS.find((s) => s.id === "introduce");
+  return introduce ? toResult(introduce.reply) : null;
+}
+
 export function matchLocalSkill(text: string): RobotChatResult | null {
   const normalized = normalizeVietnamese(text);
   if (!normalized) return null;
 
-  for (const skill of LOCAL_SKILLS) {
-    if (skill.keywords.some((keyword) => includesPhrase(normalized, keyword))) {
-      return { ok: true, provider: "local", ...skill.reply };
-    }
-  }
+  const guarded = checkLanguageGuard(text);
+  if (guarded) return guarded;
+
+  const scenario = matchDemoScenario(normalized);
+  if (scenario) return scenario;
+
+  const command = matchRobotCommand(normalized);
+  if (command) return command;
+
+  const identity = matchIdentityFallback(normalized);
+  if (identity) return identity;
+
   return null;
 }

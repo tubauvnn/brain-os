@@ -211,3 +211,21 @@ Bản reset 1 màn sạch ở trên lỡ dọn mất 2 chức năng người dù
 **Tự động nói:** toggle trong header card Chat, mặc định bật, lưu `localStorage` key `robot_chuoi_auto_speak`. Nhận reply → nếu bật thì `speechSynthesis` đọc (`lang="vi-VN"`, `rate/pitch/volume=1.0`, ưu tiên voice tiếng Việt nếu máy có) → robot state `speaking` lúc đọc → về lại mood vừa nhận khi đọc xong. Nút "⏹ Dừng nói" cạnh đó: cancel ngay + về `idle`.
 
 **Đã test qua curl** — không đổi hành vi backend. Chưa test bằng trình duyệt/loa thật (môi trường VPS không có).
+
+## Nâng não Chuối — brain profile + demo scenario + language guard (2026-07-08, sau bản fullscreen/auto-speak ở trên)
+
+Local skill trước đó (phiên 40-41) chỉ trả 1 câu xác nhận cụt ("Ok, Chuối quay trái.") — người dùng phản hồi demo "vẫn ngu ngu". Thêm 1 "brain layer" thật cho Chuối: personality rõ, kịch bản demo có ngữ cảnh, chặn ngôn ngữ lạ, gợi ý bước tiếp theo — vẫn không gọi OpenAI cho các lệnh demo, vẫn không thêm panel UI mới.
+
+**`src/lib/robot-ai/chuoi-profile.ts`** — `CHUOI_PROFILE` (name/identity/role/speakingStyle/hardware/rules) là nguồn sự thật duy nhất cho persona, dùng để build system prompt OpenAI thay vì chuỗi cứng.
+
+**`src/lib/robot-ai/demo-scenarios.ts`** — 7 scenario (`greet_customer`, `introduce`, `sales_demo`, `turn_left`, `turn_right`, `sleep`, `wake`), mỗi scenario là 1 màn trình diễn nhỏ: câu trả lời dài hơn có ngữ cảnh (vd sales_demo nhắc cả "báo tồn hàng và gọi chủ quầy" thay vì chỉ xác nhận đơn thuần) + `suggestedNextActions` (2-3 gợi ý bước tiếp theo) + `brainNote:"local scenario"`.
+
+**`src/lib/robot-ai/language-guard.ts`** — đo tỷ lệ ký tự ngoài dải Latin/Việt; câu bị nhận diện loạn (Bengali/Ả Rập/Cyrillic...) → trả thẳng *"Chuối chưa nghe rõ. Bạn nói lại bằng tiếng Việt giúp mình nhé."*, không gọi OpenAI. Không chặn tiếng Anh (vẫn là chữ Latin, vẫn rơi xuống OpenAI bình thường như câu ngoài kịch bản).
+
+**`src/lib/robot-ai/local-skills.ts` v2** — thứ tự xử lý: normalize → language guard → demo scenario → robot command (nhìn tôi/cười lên/dừng lại/demo gia đình/bảo vệ/robot/test mic) → identity fallback (biến thể hỏi danh tính khác chữ) → `null` cho OpenAI. Khớp nhiều biến thể hơn: "chuối ơi"/"chào"/"xin chào" → chào; "quay trái"/"nhìn trái"/"trái" → quay trái (tương tự phải); "ngủ đi"/"nghỉ đi" → ngủ; "dậy đi"/"thức dậy" → dậy.
+
+**`src/lib/robot-ai/openai-provider.ts`** — system prompt build từ `CHUOI_PROFILE`, thêm `SIMULATOR_CONTEXT` vào mỗi request nhắc model đây là simulator trước ESP32-S3, mục tiêu "giống robot thật, không giống chatbot".
+
+**API + frontend:** `RobotChatResult` thêm `suggestedNextActions`/`brainNote`; `/api/robot/chat` trả + lưu 2 field này. `page.tsx`: giữ `thinking` tối thiểu 300ms trước khi chuyển `speaking` (local scenario trả lời <5ms, không delay thì mặt robot giật); `suggestedNextActions` hiện thành chip tròn nhỏ dưới tin nhắn cuối, bấm chip tự gửi câu tương ứng; `<details>` "Nâng cao" thêm dòng `brainNote`/`suggestedNextActions`.
+
+**Đã test thật (curl):** 4 scenario demo button + biến thể (ngủ/dậy/nghỉ/quay phải/cười/identity fallback) đều đúng, câu dài có ngữ cảnh, không gọi OpenAI. Câu Bengali → language guard đúng, không gọi OpenAI. Câu ngoài kịch bản → OpenAI, tiếng Việt, không bịa. `/robot` `200`, `/xiaozhi`/`/robotonline` `404`. Chưa test bằng trình duyệt thật (chip gợi ý, delay 300ms, giọng đọc câu dài hơn).

@@ -65,6 +65,8 @@ type ChatResponse = {
   eyes?: string;
   mouth?: string;
   hardwareCommand?: HardwareCommandDTO;
+  suggestedNextActions?: string[];
+  brainNote?: string;
   error?: string | null;
 };
 
@@ -76,6 +78,24 @@ const DEMO_BUTTONS: { label: string; text: string }[] = [
   { label: "Quay phải", text: "quay phải" },
   { label: "Ngủ đi", text: "ngủ đi" },
 ];
+
+// suggestedNextActions từ backend là nhãn tiếng Việt (xem demo-scenarios.ts) —
+// map sang đúng text local skill nhận diện được khi user bấm chip gợi ý.
+const SUGGESTION_TEXT_MAP: Record<string, string> = {
+  "Chào khách": "chào khách",
+  "Mày là ai": "mày là ai",
+  "Demo bán hàng": "demo bán hàng",
+  "Quay trái": "quay trái",
+  "Quay phải": "quay phải",
+  "Ngủ đi": "ngủ đi",
+  "Thức dậy": "thức dậy",
+};
+
+// Thời gian tối thiểu robot ở trạng thái "thinking" trước khi chuyển sang
+// speaking — local scenario trả lời trong <5ms, không có khoảng dừng này thì
+// mặt robot "giật" từ thinking sang speaking gần như tức thời, không giống
+// đang xử lý gì cả.
+const MIN_THINKING_MS = 300;
 
 const AUTO_SPEAK_KEY = "robot_chuoi_auto_speak";
 
@@ -190,6 +210,7 @@ export default function RobotPage() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
+  const [lastSuggestions, setLastSuggestions] = useState<string[]>([]);
 
   const [sttSupported, setSttSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -295,11 +316,13 @@ export default function RobotPage() {
     if (!text || chatLoading) return;
     setChatLoading(true);
     setChatInput("");
+    setLastSuggestions([]);
     setMessages((prev) => [
       ...prev,
       { id: `local-${Date.now()}`, role: "user", content: text, created_at: new Date().toISOString() },
     ]);
     setRobotState("thinking");
+    const thinkingStartedAt = Date.now();
     try {
       const res = await fetch("/api/robot/chat", {
         method: "POST",
@@ -307,11 +330,18 @@ export default function RobotPage() {
         body: JSON.stringify({ text, source: "text" }),
       });
       const json = (await res.json()) as ChatResponse;
+
+      const elapsed = Date.now() - thinkingStartedAt;
+      if (elapsed < MIN_THINKING_MS) {
+        await new Promise((resolve) => setTimeout(resolve, MIN_THINKING_MS - elapsed));
+      }
+
       if (!json.ok || !json.reply) {
         flashError();
         return;
       }
       setLastResponse(json);
+      setLastSuggestions(json.suggestedNextActions ?? []);
       setMessages((prev) => [
         ...prev,
         { id: `local-reply-${Date.now()}`, role: "robot", content: json.reply as string, created_at: new Date().toISOString() },
@@ -328,6 +358,10 @@ export default function RobotPage() {
     } finally {
       setChatLoading(false);
     }
+  }
+
+  function sendSuggestedAction(label: string) {
+    sendChatMessage(SUGGESTION_TEXT_MAP[label] ?? label);
   }
 
   function toggleMic() {
@@ -459,6 +493,19 @@ export default function RobotPage() {
               ))}
               {chatLoading && <p className="text-xs text-zinc-500">Chuối đang trả lời...</p>}
             </div>
+            {!chatLoading && lastSuggestions.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {lastSuggestions.map((label) => (
+                  <button
+                    key={label}
+                    onClick={() => sendSuggestedAction(label)}
+                    className="text-xs px-2.5 py-1 rounded-full bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/40 active:scale-95 transition-all"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex gap-2">
               {sttSupported && (
                 <button
@@ -507,6 +554,8 @@ export default function RobotPage() {
                   hardwareCommand: {lastResponse.hardwareCommand?.type ?? "none"}
                   {lastResponse.hardwareCommand?.command ? `/${lastResponse.hardwareCommand.command}` : ""}
                 </span>
+                <span>brainNote: {lastResponse.brainNote ?? "—"}</span>
+                <span>suggestedNextActions: {lastResponse.suggestedNextActions?.join(", ") || "—"}</span>
               </div>
               {lastResponse.provider === "fallback" && (
                 <p className="text-amber-500">

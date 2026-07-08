@@ -23,7 +23,10 @@ export type RobotAction =
   | "turn_right"
   | "stop";
 
-export type RobotEyes = "left" | "right" | "center" | "up" | "down" | "track";
+// "closed" thêm cho scenario sleep — về mặt hiển thị RobotFaceKiosk đã tự nhắm
+// mắt khi mood="sleepy" (state="sleeping") bất kể eyes, đây là để response API
+// mô tả đúng trạng thái mắt cho debug/hardwareCommand tương lai (ESP32-S3).
+export type RobotEyes = "left" | "right" | "center" | "up" | "down" | "track" | "closed";
 
 export type RobotMouth = "idle" | "smile" | "speaking" | "thinking" | "sleep";
 
@@ -57,6 +60,12 @@ export type RobotChatResult = {
   eyes?: RobotEyes;
   mouth?: RobotMouth;
   hardwareCommand?: RobotHardwareCommand;
+  // Gợi ý 2-3 hành động tiếp theo (nhãn tiếng Việt, khớp DEMO_BUTTONS hoặc câu
+  // local skill nhận diện được) — frontend hiển thị thành chip bấm nhanh dưới reply.
+  suggestedNextActions?: string[];
+  // Ghi chú nội bộ ngắn cho <details> "Nâng cao" (vd "local scenario",
+  // "language guard") — không hiển thị ở UI chính, không phải lỗi.
+  brainNote?: string;
   cached?: boolean;
   error?: string;
 };

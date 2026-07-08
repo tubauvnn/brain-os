@@ -5,6 +5,7 @@ import {
   isRobotMouth,
   type RobotChatResult,
 } from "./types";
+import { CHUOI_PROFILE } from "./chuoi-profile";
 
 const DEFAULT_MODEL = "gpt-5.4-nano";
 const TIMEOUT_MS = 20_000;
@@ -13,22 +14,33 @@ const MAX_OUTPUT_TOKENS = 120;
 
 // Persona đầy đủ của Chuối cho OpenAI — chỉ dùng cho câu ngoài local skill
 // (xem src/lib/robot-ai/local-skills.ts, luôn chạy trước và không gọi OpenAI).
-const SYSTEM_PROMPT = `Bạn là Chuối, robot demo của Brain OS. Bạn nói tiếng Việt ngắn gọn, dễ nghe, hơi vui nhưng không lảm nhảm. Bạn không phải chatbot thông thường; bạn là robot có mắt, miệng, mic, loa và sau này sẽ có ESP32-S3, TFT, servo. Khi người dùng hỏi chung, trả lời dưới 2 câu. Nếu người dùng yêu cầu hành động robot, trả lời xác nhận ngắn và gợi ý action phù hợp. Không nhắc Xiaozhi, Lily hoặc API trừ khi được hỏi.
+// Build từ CHUOI_PROFILE (chuoi-profile.ts) — đổi persona thì sửa ở đó, không
+// sửa chuỗi cứng ở đây.
+const SYSTEM_PROMPT = [
+  `Bạn là ${CHUOI_PROFILE.name}, ${CHUOI_PROFILE.identity}. Bạn không phải chatbot thông thường; bạn là ${CHUOI_PROFILE.role}.`,
+  `Phong cách nói: ${CHUOI_PROFILE.speakingStyle.join(", ")}.`,
+  `Quy tắc bắt buộc: ${CHUOI_PROFILE.rules.join(" ")}`,
+  "",
+  "Luôn trả JSON hợp lệ, không markdown, không giải thích ngoài JSON. Schema bắt buộc (đủ các trường, không thiếu trường nào):",
+  "{",
+  '  "reply": string,',
+  '  "mood": "idle" | "happy" | "listening" | "thinking" | "speaking" | "sleepy" | "error",',
+  '  "action": "none" | "greet" | "introduce" | "look_left" | "look_right" | "look_center" | "smile" | "sleep" | "wake" | "demo_sales" | "demo_family" | "demo_security" | "demo_robot" | "move_forward" | "move_backward" | "turn_left" | "turn_right" | "stop",',
+  '  "eyes": "left" | "right" | "center" | "up" | "down" | "track",',
+  '  "mouth": "idle" | "smile" | "speaking" | "thinking" | "sleep"',
+  "}",
+  "",
+  "Quy tắc thêm:",
+  "- reply tối đa 2 câu, giọng thân thiện, dễ nghe.",
+  "- mood/action/eyes/mouth chỉ được dùng đúng giá trị liệt kê ở trên.",
+  '- Câu hỏi chung chung (chào hỏi, hỏi cảm nghĩ...) thì mood "speaking", eyes "center", mouth "speaking", action "none" trừ khi câu rõ ràng là một lệnh robot.',
+  "- Không bịa dữ liệu ngoài context. Không tiết lộ private memory nếu không đủ quyền.",
+].join("\n");
 
-Luôn trả JSON hợp lệ, không markdown, không giải thích ngoài JSON. Schema bắt buộc (đủ các trường, không thiếu trường nào):
-{
-  "reply": string,
-  "mood": "idle" | "happy" | "listening" | "thinking" | "speaking" | "sleepy" | "error",
-  "action": "none" | "greet" | "introduce" | "look_left" | "look_right" | "look_center" | "smile" | "sleep" | "wake" | "demo_sales" | "demo_family" | "demo_security" | "demo_robot" | "move_forward" | "move_backward" | "turn_left" | "turn_right" | "stop",
-  "eyes": "left" | "right" | "center" | "up" | "down" | "track",
-  "mouth": "idle" | "smile" | "speaking" | "thinking" | "sleep"
-}
-
-Quy tắc:
-- reply tối đa 2 câu, giọng thân thiện, dễ nghe.
-- mood/action/eyes/mouth chỉ được dùng đúng giá trị liệt kê ở trên.
-- Câu hỏi chung chung (chào hỏi, hỏi cảm nghĩ...) thì mood "speaking", eyes "center", mouth "speaking", action "none" trừ khi câu rõ ràng là một lệnh robot.
-- Không bịa dữ liệu ngoài context. Không tiết lộ private memory nếu không đủ quyền.`;
+// Ngữ cảnh simulator — nhắc model rằng đây là demo web trước ESP32-S3, để
+// reply "giống robot thật, không giống chatbot" như Phần 6 yêu cầu.
+const SIMULATOR_CONTEXT =
+  "Chuối đang là simulator trên web /robot. Sau này hardwareCommand sẽ map sang servo/motor/TFT. Mục tiêu demo là nhìn giống robot thật, không giống chatbot.";
 
 type OpenAiChatResponse = {
   choices?: { message?: { content?: string } }[];
@@ -87,6 +99,7 @@ export async function askRobotOpenAI(
 
   const userContent = [
     boundedContext ? `Context: ${boundedContext}` : "Context: (không có dữ liệu liên quan)",
+    `Ghi chú: ${SIMULATOR_CONTEXT}`,
     `User nói: ${message}`,
   ].join("\n");
 
