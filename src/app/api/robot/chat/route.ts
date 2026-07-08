@@ -5,11 +5,12 @@ import { handleError } from "@/lib/api";
 import { log } from "@/lib/logger";
 import { getRobotDevice } from "@/lib/robot";
 import { askCliAgents } from "@/lib/brain/cli-agent-router";
-import { askOpenAI } from "@/lib/brain/openai-provider";
 import { SYSTEM_CONTEXT } from "@/lib/brain/system-context";
-import { FALLBACK_REPLY, type NormalizedReply } from "@/lib/brain/reply-schema";
 import { ensureSession, loadSessionHistoryText, countSessionMessages } from "@/lib/brain/session-context";
 import { toJsonValue } from "@/lib/json";
+import { matchLocalSkill } from "@/lib/robot-ai/local-skills";
+import { askRobotOpenAI } from "@/lib/robot-ai/openai-provider";
+import type { RobotAction, RobotChatResult, RobotMood, RobotMouth } from "@/lib/robot-ai/types";
 
 const ChatSchema = z.object({
   message: z.string().min(1).max(2000).optional(),
@@ -35,9 +36,10 @@ const ChatSchema = z.object({
 const DEFAULT_ROBOT_DEVICE_ID = "dev-robot-simulator";
 const DEFAULT_ACCESS_LEVEL = 3;
 const MAX_TOTAL_CONTEXT_CHARS = 8000;
+// "history tối đa 6 lượt" cho prompt OpenAI ~ 6 cặp user/robot = 12 dòng.
+const OPENAI_HISTORY_LIMIT = 12;
 
-type FinalProvider = "openai" | "cli_agent" | "fallback";
-type ChatResult = NormalizedReply & { provider: FinalProvider; error: string | null };
+const FALLBACK_TEXT = "Chuối chưa kết nối được não AI, nhưng phần điều khiển robot vẫn chạy.";
 
 function combineContext(base: string, history: string): string {
   const combined = history ? `${base}\n\nLịch sử hội thoại gần đây (session hiện tại):\n${history}` : base;
@@ -45,28 +47,63 @@ function combineContext(base: string, history: string): string {
   return `${combined.slice(0, MAX_TOTAL_CONTEXT_CHARS)}\n...(context bị cắt bớt, vượt giới hạn ${MAX_TOTAL_CONTEXT_CHARS} ký tự)`;
 }
 
-// Mặc định (deep !== true): gọi OpenAI trực tiếp — nhanh, phù hợp chat realtime.
-// Lỗi thì fallback local ngay, KHÔNG rơi xuống CLI agent (CLI chậm, chỉ dùng khi
-// người gọi chủ động yêu cầu qua body.deep === true).
-async function resolveReply(userText: string, context: string, deep: boolean): Promise<ChatResult> {
+// CLI agent router (chế độ deep=true) vẫn chạy trên schema cũ (face/action, xem
+// src/lib/brain/reply-schema.ts) — quy đổi best-effort sang mood/action/eyes/mouth
+// mới để response luôn theo đúng 1 schema, không phá tính năng deep mode cũ.
+const LEGACY_FACE_TO_MOOD: Record<string, RobotMood> = {
+  idle: "idle",
+  happy: "happy",
+  thinking: "thinking",
+  sad: "error",
+};
+const LEGACY_FACE_TO_MOUTH: Record<string, RobotMouth> = {
+  idle: "idle",
+  happy: "smile",
+  thinking: "thinking",
+  sad: "idle",
+};
+const LEGACY_ACTION_TO_ROBOT_ACTION: Record<string, RobotAction> = {
+  none: "none",
+  wave: "greet",
+  nod: "smile",
+};
+
+type ResolvedReply = Omit<RobotChatResult, "ok">;
+
+async function resolveReply(userText: string, context: string, deep: boolean): Promise<ResolvedReply> {
+  const localMatch = matchLocalSkill(userText);
+  if (localMatch) {
+    const { ok: _ok, ...rest } = localMatch;
+    return rest;
+  }
+
   if (deep) {
     const cli = await askCliAgents(userText, context);
     return {
+      provider: cli.provider,
       reply: cli.reply,
-      robot_say: cli.robot_say,
-      face: cli.face,
-      action: cli.action,
-      provider: cli.provider === "fallback" ? "fallback" : "cli_agent",
-      error: cli.errors.length > 0 ? cli.errors.join(" | ").slice(0, 500) : null,
+      mood: LEGACY_FACE_TO_MOOD[cli.face] ?? "idle",
+      action: LEGACY_ACTION_TO_ROBOT_ACTION[cli.action] ?? "none",
+      eyes: "center",
+      mouth: LEGACY_FACE_TO_MOUTH[cli.face] ?? "idle",
+      error: cli.errors.length > 0 ? cli.errors.join(" | ").slice(0, 500) : undefined,
     };
   }
 
   try {
-    const openaiResult = await askOpenAI(userText, context);
-    return { ...openaiResult, provider: "openai", error: null };
+    const openaiResult = await askRobotOpenAI(userText, context);
+    return { ...openaiResult, provider: "openai" };
   } catch (e) {
     const message = e instanceof Error ? e.message : "Lỗi không xác định khi gọi OpenAI";
-    return { ...FALLBACK_REPLY, provider: "fallback", error: message };
+    return {
+      provider: "fallback",
+      reply: FALLBACK_TEXT,
+      mood: "error",
+      action: "none",
+      eyes: "center",
+      mouth: "idle",
+      error: message,
+    };
   }
 }
 
@@ -104,7 +141,7 @@ export async function POST(req: NextRequest) {
       const ok = await ensureSession(body.sessionId);
       if (ok) {
         sessionId = body.sessionId;
-        historyText = await loadSessionHistoryText(sessionId);
+        historyText = await loadSessionHistoryText(sessionId, OPENAI_HISTORY_LIMIT);
       }
     }
 
@@ -163,9 +200,11 @@ export async function POST(req: NextRequest) {
           content: result.reply,
           provider: result.provider,
           metadata: toJsonValue({
-            robot_say: result.robot_say,
-            face: result.face,
+            mood: result.mood,
             action: result.action,
+            eyes: result.eyes,
+            mouth: result.mouth,
+            hardwareCommand: result.hardwareCommand,
             latencyMs,
           }),
           device_id: device?.id,
@@ -191,13 +230,16 @@ export async function POST(req: NextRequest) {
 
     const sessionMessageCount = sessionId ? await countSessionMessages(sessionId) : null;
 
-    return NextResponse.json({
+    const response: RobotChatResult & Record<string, unknown> = {
       ok: true,
-      reply: result.reply,
-      robot_say: result.robot_say,
-      face: result.face,
-      action: result.action,
       provider: result.provider,
+      model: result.model,
+      reply: result.reply,
+      mood: result.mood,
+      action: result.action,
+      eyes: result.eyes,
+      mouth: result.mouth,
+      hardwareCommand: result.hardwareCommand,
       error: result.error,
       user_message_id: userMessageId,
       robot_message_id: robotMessageId,
@@ -205,7 +247,9 @@ export async function POST(req: NextRequest) {
       session_id: sessionId,
       session_message_count: sessionMessageCount,
       latency_ms: latencyMs,
-    });
+    };
+
+    return NextResponse.json(response);
   } catch (e) {
     return handleError(e);
   }

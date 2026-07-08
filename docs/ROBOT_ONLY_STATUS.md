@@ -128,4 +128,49 @@ Tên hiển thị/persona của robot trong `/robot` đã đổi từ "ChinChin"
 
 **Không có bộ pattern-matcher "local" tách biệt cho câu "mày là ai"/câu chào trong `/api/robot/chat`** — endpoint này 100% dùng AI thật (OpenAI, hoặc CLI agent khi `deep:true`), không có tầng trả lời tĩnh riêng như `/xiaozhi` (đã disable) từng có. Vì vậy 2 câu bắt buộc ("Mình là Chuối, robot demo của Brain OS." / "Xin chào, mình là Chuối đây.") được đảm bảo bằng **rule tường minh trong system prompt** (không phải hard-code) — đã test thật qua `curl`, AI trả đúng nguyên văn cả 2 câu, `provider:"openai"` (không giả lập).
 
+> **Cập nhật 2026-07-08 (sau, xem mục "Smart Robot Demo" bên dưới):** nhận định trên **không còn đúng** — `/api/robot/chat` giờ có tầng local skill chạy trước OpenAI. Giữ nguyên đoạn này để lịch sử, không sửa lùi.
+
 **Không đụng:** `XiaoziBridgePanel.tsx` (đã archive/không còn render từ phiên 38, còn 1 dòng "ChinChin" trong string test nội bộ — không sửa vì file này đã chết, ngoài phạm vi tìm kiếm yêu cầu lần này), toàn bộ `disabled-routes/`, `docs/archived-xiaozhi/`, Postgres, NPM/Cloudflare, `.env`.
+
+## Chuối trở thành Smart Robot Demo — action-aware (2026-07-08)
+
+Nâng cấp `/robot` từ "chatbot có mặt robot" thành demo robot thật hơn: có local skill engine trả lời tức thì, schema response giàu hơn (mood/action/eyes/mouth/hardwareCommand), demo buttons bấm phát ăn ngay, memory localStorage, và panel xem trước lệnh phần cứng. Toàn bộ vẫn chỉ trong phạm vi `/robot` — không đụng Xiaozhi/Lily/ElevenLabs, không khôi phục `/xiaozhi`/`/robotonline`.
+
+### Schema mới — `src/lib/robot-ai/types.ts`
+
+`RobotChatResult`: `ok, provider, model?, reply, mood, action, eyes?, mouth?, hardwareCommand?, cached?, error?`.
+- `mood`: `idle|happy|listening|thinking|speaking|sleepy|error`.
+- `action`: 18 giá trị (`greet`, `introduce`, `look_left/right/center`, `smile`, `sleep`, `wake`, `demo_sales/family/security/robot`, `move_forward/backward`, `turn_left/right`, `stop`, `none`).
+- `eyes`: `left|right|center|up|down|track`. `mouth`: `idle|smile|speaking|thinking|sleep`.
+- `hardwareCommand`: `{type: servo|motor|face|audio|none, command, payload?}` — placeholder cho ESP32-S3 sau này, chưa gọi phần cứng thật.
+- `provider` mở rộng hơn 4 giá trị trong spec gốc (`local|openai|deepseek|openrouter`) để không phá tính năng `deep:true` (CLI agent) đã có từ trước: thêm `codex_cli|claude_cli|gemini_cli|fallback`.
+
+### Local skill engine — `src/lib/robot-ai/local-skills.ts`
+
+Chạy **trước** OpenAI trong `/api/robot/chat`, normalize tiếng Việt (bỏ dấu qua `NFD` + strip combining marks, xử lý riêng `đ/Đ`), so khớp cụm từ trọn vẹn (word-boundary, không match chuỗi con). 15 skill: chào (`xin chào/hello/chuối ơi`), giới thiệu (`mày là ai/bạn là ai/giới thiệu`), chào khách, quay trái/phải, nhìn tôi, cười lên, dừng lại, ngủ đi, thức dậy, demo bán hàng/gia đình/bảo vệ/robot, test mic — mỗi skill trả `RobotChatResult` đầy đủ ngay, `provider:"local"`, latency ~0-3ms (đã đo qua curl), không gọi OpenAI.
+
+### OpenAI provider mới — `src/lib/robot-ai/openai-provider.ts`
+
+Chỉ gọi khi câu không khớp local skill nào. System prompt persona đầy đủ (robot có mắt/miệng/mic/loa, sau này ESP32-S3/TFT/servo — không nhắc Xiaozhi/Lily trừ khi được hỏi), trả JSON schema mood/action/eyes/mouth (không còn `face`/`robot_say` cũ). `max_completion_tokens: 120` (đã verify tham số này đúng với model `gpt-5.4-nano` qua test thật, không phải đoán), timeout 20s, context gồm `SYSTEM_CONTEXT` + tối đa 6 lượt lịch sử session (`OPENAI_HISTORY_LIMIT = 12` dòng). Lỗi (thiếu key/timeout/JSON sai schema) → fallback local: *"Chuối chưa kết nối được não AI, nhưng phần điều khiển robot vẫn chạy."* (`mood:"error"`, `provider:"fallback"`).
+
+**`src/app/api/robot/chat/route.ts`** giữ nguyên toàn bộ logic DB/session cũ (lưu `ConversationMessage`, session history, `ActivityLog`), chỉ đổi phần resolve reply: local skill → (nếu `deep:true`) CLI agent (quy đổi best-effort từ schema `face/action` cũ sang `mood/eyes/mouth` mới, xem `LEGACY_FACE_TO_MOOD` trong route) → OpenAI mới → fallback. Response JSON luôn đủ field theo `RobotChatResult` cộng thêm debug field cũ (`session_id`, `latency_ms`, `session_message_count`...).
+
+### Frontend — `src/app/robot/page.tsx`
+
+- **Mood → face**: map `mood` sang `RobotFaceState` có sẵn của `RobotFaceKiosk` (`sleepy`→`sleeping`, còn lại trùng tên).
+- **Action → gesture**: chỉ 4 action map sang gesture thật (`greet`→wave, `introduce/smile/wake`→nod) vì `RobotGesture` chỉ có `none|wave|nod`; action đầy đủ vẫn hiển thị qua badge + panel Hardware Preview.
+- **Eyes → gaze thật**: thêm `gazeOverride` vào `useRobotEyes`/`RobotFaceKiosk` (ưu tiên cao nhất, trên cả camera/pointer) — `left/right/up/down/center` là hướng nhìn cố định (-1..1), tự hết hạn sau 1.5s quay lại tracking bình thường; `track` = không override (dùng camera/pointer như cũ). Đây là plumbing mới thật, không phải chỉ hiển thị badge.
+- **Demo Control Panel**: 14 nút gửi thẳng câu vào `/api/robot/chat` (khớp local skill, phản hồi ngay).
+- **Hardware Command Preview**: panel mới hiện `mood/action/eyes/mouth/hardwareCommand.type/command/payload` từ response gần nhất + dòng "Phần này sau sẽ map sang ESP32-S3."
+- **Memory localStorage**: key `robot_chuoi_chat_history`, tối đa 20 tin nhắn gần nhất, load lúc mount (paint ngay trước khi DB fetch xong), lưu mỗi khi `messages` đổi, nút "🗑️ Clear memory" xoá cả localStorage lẫn state UI. **Độc lập với DB** — `loadStatus()` (tải lịch sử từ Postgres theo session) vẫn giữ nguyên như cũ, không xoá; localStorage chỉ là cache phía client cho riêng yêu cầu demo lần này, không phải thay thế cơ chế session DB.
+- Badge provider/mood/action hiển thị trực tiếp trong bong bóng chat của robot.
+
+### Đã test thật (curl, không giả lập)
+
+Cả 12 câu local skill (`chào khách`, `mày là ai`, `nhìn tôi`, `cười lên`, `thức dậy`, `dừng lại`, `demo gia đình/bảo vệ/bán hàng/robot`, `quay trái`, `ngủ đi`, `test mic`) trả đúng `provider:"local"` + schema đầy đủ, latency 0-3ms. Câu ngoài skill (hỏi thời tiết) rơi xuống `provider:"openai"`, `model:"gpt-5.4-nano"`, JSON hợp lệ. `/robot` local + prod đều `200`. `/xiaozhi`, `/robotonline` vẫn `404` (local + prod). Không log/leak `OPENAI_API_KEY` hay chuỗi giống secret trong `brainos.log`. `tsc --noEmit` sạch (2 lỗi còn lại nằm trong `disabled-routes/`, không liên quan, có từ trước).
+
+### Chưa làm (đúng phạm vi yêu cầu)
+
+- Chưa nối phần cứng thật — `hardwareCommand` mới là preview/log, chưa gửi lệnh servo/motor thật.
+- Chưa test UI bằng trình duyệt thật (chỉ verify qua curl + xem HTML SSR có đủ marker "Demo Control Panel"/"Hardware Command Preview"/"Clear memory") — môi trường VPS không có trình duyệt để click thật.
+- `eslint`/`next lint` chưa chạy được (repo chưa có `eslint.config.js`, `next lint` đòi setup tương tác) — đã bù bằng `tsc --noEmit` sạch cho toàn bộ file đổi.

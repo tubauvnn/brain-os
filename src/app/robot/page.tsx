@@ -32,6 +32,46 @@ function mapDbFaceToExpr(dbFace: string | undefined): RobotFaceState {
   }
 }
 
+// mood/action/eyes từ /api/robot/chat (RobotChatResult, xem src/lib/robot-ai/types.ts)
+// quy đổi sang các prop mà RobotFaceKiosk/useRobotEyes đã hỗ trợ sẵn.
+const MOOD_TO_FACE_STATE: Record<string, RobotFaceState> = {
+  idle: "idle",
+  happy: "happy",
+  listening: "listening",
+  thinking: "thinking",
+  speaking: "speaking",
+  sleepy: "sleeping",
+  error: "error",
+};
+function moodToFaceState(mood?: string): RobotFaceState | null {
+  if (!mood) return null;
+  return MOOD_TO_FACE_STATE[mood] ?? null;
+}
+
+// RobotGesture chỉ có none/wave/nod (hiệu ứng nhất thời) — action nào không map
+// trực tiếp thì không gesture (đã đủ thể hiện qua đổi mood/badge action riêng).
+const ACTION_TO_GESTURE: Record<string, RobotGesture> = {
+  greet: "wave",
+  introduce: "nod",
+  smile: "nod",
+  wake: "nod",
+};
+function actionToGesture(action?: string): RobotGesture {
+  if (!action) return "none";
+  return ACTION_TO_GESTURE[action] ?? "none";
+}
+
+// Hướng nhìn rời rạc (-1..1) cho gazeOverride của useRobotEyes. "track" = null
+// (không override, quay lại camera/pointer tracking như bình thường).
+const EYES_TO_GAZE: Record<string, { x: number; y: number } | null> = {
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+  up: { x: 0, y: -1 },
+  down: { x: 0, y: 1 },
+  center: { x: 0, y: 0 },
+  track: null,
+};
+
 // Ưu tiên hiển thị giống RobotFace cũ: isSpeaking > isListening > isThinking > face nền.
 function resolveDisplayState(
   base: RobotFaceState,
@@ -84,13 +124,18 @@ type CommandResponse = {
   error?: string;
 };
 
+type HardwareCommandDTO = { type: string; command: string; payload?: Record<string, unknown> };
+
 type ChatResponse = {
   ok: boolean;
   reply?: string;
-  robot_say?: string;
-  face?: string;
-  action?: string;
   provider?: string;
+  model?: string;
+  mood?: string;
+  action?: string;
+  eyes?: string;
+  mouth?: string;
+  hardwareCommand?: HardwareCommandDTO;
   robot_message_id?: string;
   created_at?: string;
   error?: string | null;
@@ -124,13 +169,18 @@ type ChatMessage = {
   role: "user" | "robot";
   content: string;
   provider?: string | null;
+  mood?: string | null;
+  action?: string | null;
   error?: string | null;
   created_at: string;
 };
 
 function providerLabel(provider?: string | null): string {
+  if (provider === "local") return "Local skill";
   if (provider === "openai") return "OpenAI";
-  if (provider === "cli_agent") return "CLI Agent (Codex/Claude/Gemini)";
+  if (provider === "deepseek") return "DeepSeek";
+  if (provider === "openrouter") return "OpenRouter";
+  if (provider === "codex_cli" || provider === "claude_cli" || provider === "gemini_cli") return "CLI Agent (deep mode)";
   if (provider === "fallback") return "Fallback (chế độ cơ bản)";
   return provider ?? "";
 }
@@ -188,6 +238,25 @@ const COMMANDS: { command: string; label: string }[] = [
   { command: "stop", label: "Dừng" },
 ];
 
+// Demo buttons — gửi thẳng câu vào /api/robot/chat, khớp local skill (xem
+// src/lib/robot-ai/local-skills.ts) nên trả lời ngay, không chờ OpenAI.
+const DEMO_BUTTONS: { label: string; text: string }[] = [
+  { label: "Chào khách", text: "chào khách" },
+  { label: "Giới thiệu bản thân", text: "mày là ai" },
+  { label: "Demo bán hàng", text: "demo bán hàng" },
+  { label: "Demo gia đình", text: "demo gia đình" },
+  { label: "Demo bảo vệ", text: "demo bảo vệ" },
+  { label: "Demo mắt nhìn theo", text: "nhìn tôi" },
+  { label: "Demo nghe nói", text: "test mic" },
+  { label: "Demo robot command", text: "demo robot" },
+  { label: "Quay trái", text: "quay trái" },
+  { label: "Quay phải", text: "quay phải" },
+  { label: "Dừng lại", text: "dừng lại" },
+  { label: "Chế độ ngủ", text: "ngủ đi" },
+  { label: "Thức dậy", text: "thức dậy" },
+  { label: "Chế độ vui vẻ", text: "cười lên" },
+];
+
 function toLogEntry(e: DeviceEventDTO): LogEntry {
   const payload = (e.payload ?? {}) as Record<string, unknown>;
   return {
@@ -240,9 +309,52 @@ export default function RobotPage() {
   }
 
   // Biểu cảm/hành động hiển thị trên RobotFaceKiosk — cập nhật từ 2 nguồn: nút
-  // lệnh thủ công (map qua mapDbFaceToExpr) và response face/action của /api/robot/chat.
+  // lệnh thủ công (map qua mapDbFaceToExpr) và response mood/action của /api/robot/chat.
   const [robotFaceExpr, setRobotFaceExpr] = useState<RobotFaceState>("idle");
   const [robotAction, setRobotAction] = useState<RobotGesture>("none");
+
+  // Structured response gần nhất từ /api/robot/chat (mood/action/eyes/mouth/hardwareCommand)
+  // — hiển thị badge trong chat + panel "Hardware command preview".
+  const [robotMoodLabel, setRobotMoodLabel] = useState<string>("idle");
+  const [robotActionLabel, setRobotActionLabel] = useState<string>("none");
+  const [robotEyesLabel, setRobotEyesLabel] = useState<string>("center");
+  const [robotMouthLabel, setRobotMouthLabel] = useState<string>("idle");
+  const [lastHardwareCommand, setLastHardwareCommand] = useState<HardwareCommandDTO | null>(null);
+
+  // Hướng nhìn rời rạc tạm thời (eyes: left/right/up/down/center) — ưu tiên cao
+  // nhất trong useRobotEyes, tự hết hạn sau EYES_OVERRIDE_MS để quay lại
+  // camera/pointer tracking bình thường (eyes: "track" thì không override gì).
+  const EYES_OVERRIDE_MS = 1500;
+  const [gazeOverride, setGazeOverride] = useState<{ x: number; y: number } | null>(null);
+  const gazeOverrideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function applyRobotEyes(eyes?: string) {
+    if (!eyes || !(eyes in EYES_TO_GAZE)) return;
+    if (gazeOverrideTimerRef.current) clearTimeout(gazeOverrideTimerRef.current);
+    const target = EYES_TO_GAZE[eyes];
+    setGazeOverride(target);
+    if (target) {
+      gazeOverrideTimerRef.current = setTimeout(() => setGazeOverride(null), EYES_OVERRIDE_MS);
+    }
+  }
+
+  // Gộp lại phần xử lý response chung cho sendChatMessage + runHandsFreeTurn —
+  // tránh lặp mapping mood/action/eyes/mouth/hardwareCommand ở 2 chỗ.
+  function applyRobotResponse(json: ChatResponse) {
+    const face = moodToFaceState(json.mood);
+    if (face) setRobotFaceExpr(face);
+    setRobotAction(actionToGesture(json.action));
+    if (json.mood) setRobotMoodLabel(json.mood);
+    if (json.action) setRobotActionLabel(json.action);
+    if (json.eyes) {
+      setRobotEyesLabel(json.eyes);
+      applyRobotEyes(json.eyes);
+    }
+    if (json.mouth) setRobotMouthLabel(json.mouth);
+    setLastHardwareCommand(json.hardwareCommand ?? null);
+    setSessionMessageCount(json.session_message_count ?? null);
+    setLastProvider(json.provider ?? null);
+    setLastLatencyMs(json.latency_ms ?? null);
+  }
 
   // Secure context — mic/camera của trình duyệt chỉ hoạt động trên HTTPS hoặc localhost.
   const [secureContextChecked, setSecureContextChecked] = useState(false);
@@ -282,6 +394,34 @@ export default function RobotPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+
+  // Memory phiên bằng localStorage (Mục tiêu 7) — độc lập với DB/session server-side
+  // (loadStatus() bên dưới vẫn tải lịch sử DB như cũ). Load lúc mount để reload
+  // trang vẫn thấy chat cũ ngay, không cần chờ fetch DB.
+  const CHAT_MEMORY_KEY = "robot_chuoi_chat_history";
+  const CHAT_MEMORY_LIMIT = 20;
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CHAT_MEMORY_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as ChatMessage[];
+      if (Array.isArray(saved) && saved.length > 0) setMessages(saved);
+    } catch {
+      // localStorage hỏng/không parse được — bỏ qua, loadStatus() vẫn nạp từ DB.
+    }
+  }, []);
+  useEffect(() => {
+    if (messages.length === 0) return;
+    try {
+      window.localStorage.setItem(CHAT_MEMORY_KEY, JSON.stringify(messages.slice(-CHAT_MEMORY_LIMIT)));
+    } catch {
+      // localStorage đầy/bị chặn — bỏ qua, không ảnh hưởng chat.
+    }
+  }, [messages]);
+  function clearChatMemory() {
+    window.localStorage.removeItem(CHAT_MEMORY_KEY);
+    setMessages([]);
+  }
 
   // Voice (STT dùng chung cho khối Chat + khối Voice/Mic)
   const [isListening, setIsListening] = useState(false);
@@ -619,16 +759,14 @@ export default function RobotPage() {
           role: "robot",
           content: json.reply as string,
           provider: json.provider,
+          mood: json.mood,
+          action: json.action,
           error: json.error,
           created_at: json.created_at ?? new Date().toISOString(),
         },
       ]);
-      if (json.face) setRobotFaceExpr(json.face as RobotFaceState);
-      if (json.action) setRobotAction(json.action as RobotGesture);
-      setSessionMessageCount(json.session_message_count ?? null);
-      setLastProvider(json.provider ?? null);
-      setLastLatencyMs(json.latency_ms ?? null);
-      speak(json.robot_say || json.reply);
+      applyRobotResponse(json);
+      speak(json.reply);
     } catch {
       setError("Không kết nối được API");
     } finally {
@@ -886,9 +1024,9 @@ export default function RobotPage() {
     }
   }
 
-  // Một lượt hội thoại hoàn chỉnh: gửi transcript → nhận reply/robot_say → đọc
-  // bằng TTS → sau cooldown 500ms tự nghe lại. Tách riêng khỏi sendChatMessage()
-  // (dùng cho ô chat thủ công) để không đổi hành vi chat cũ.
+  // Một lượt hội thoại hoàn chỉnh: gửi transcript → nhận reply → đọc bằng TTS →
+  // sau cooldown 500ms tự nghe lại. Tách riêng khỏi sendChatMessage() (dùng cho
+  // ô chat thủ công) để không đổi hành vi chat cũ.
   async function runHandsFreeTurn(
     text: string,
     meta: { source: "voice"; sttMode: "browser" | "openai"; sttProvider?: string; durationMs?: number }
@@ -924,20 +1062,18 @@ export default function RobotPage() {
       });
       const json = (await res.json()) as ChatResponse;
       if (!json.ok || !json.reply) throw new Error(json.error ?? "Chat thất bại");
-      robotSay = json.robot_say || json.reply;
+      robotSay = json.reply;
       robotMessage = {
         id: json.robot_message_id ?? robotMessage.id,
         role: "robot",
         content: json.reply,
         provider: json.provider,
+        mood: json.mood,
+        action: json.action,
         error: json.error,
         created_at: json.created_at ?? robotMessage.created_at,
       };
-      if (json.face) setRobotFaceExpr(json.face as RobotFaceState);
-      if (json.action) setRobotAction(json.action as RobotGesture);
-      setSessionMessageCount(json.session_message_count ?? null);
-      setLastProvider(json.provider ?? null);
-      setLastLatencyMs(json.latency_ms ?? null);
+      applyRobotResponse(json);
     } catch {
       // Giữ nguyên robotSay/robotMessage mặc định — robot vẫn phải nói được gì đó.
     }
@@ -1182,7 +1318,16 @@ export default function RobotPage() {
 
       <div id="chat">
       <Card className="mb-4">
-        <h3 className="text-sm font-medium text-zinc-100 mb-3">💬 Chat với Robot</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-zinc-100">💬 Chat với Robot</h3>
+          <button
+            onClick={clearChatMemory}
+            title="Xoá lịch sử chat lưu trong trình duyệt (localStorage)"
+            className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-red-600/20 hover:text-red-300 active:scale-95 transition-all"
+          >
+            🗑️ Clear memory
+          </button>
+        </div>
         <div className="space-y-2 max-h-96 overflow-y-auto mb-3">
           {messages.length === 0 && (
             <p className="text-xs text-zinc-600">Chưa có tin nhắn nào — gõ hoặc bấm mic để bắt đầu.</p>
@@ -1195,8 +1340,12 @@ export default function RobotPage() {
                 }`}
               >
                 <p>{m.content}</p>
-                {m.role === "robot" && m.provider && (
-                  <p className="mt-1 text-[10px] text-zinc-500 font-mono">{providerLabel(m.provider)}</p>
+                {m.role === "robot" && (m.provider || m.mood || m.action) && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {m.provider && <Badge variant="indigo">{providerLabel(m.provider)}</Badge>}
+                    {m.mood && <Badge variant="default">mood: {m.mood}</Badge>}
+                    {m.action && m.action !== "none" && <Badge variant="green">action: {m.action}</Badge>}
+                  </div>
                 )}
                 {m.role === "robot" && m.provider === "fallback" && (
                   <p className="mt-1 text-[10px] text-amber-500">
@@ -1444,6 +1593,48 @@ export default function RobotPage() {
       </Card>
       </div>
 
+      {/* ── Demo control panel — bấm phát là thấy Chuối phản ứng ngay (local skill, không chờ OpenAI) ── */}
+      <Card className="mb-4">
+        <h3 className="text-sm font-medium text-zinc-100 mb-3">🎬 Demo Control Panel</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+          {DEMO_BUTTONS.map((d) => (
+            <button
+              key={d.label}
+              disabled={chatLoading}
+              onClick={() => sendChatMessage(d.text)}
+              className="min-h-[3rem] px-3 py-2 text-sm rounded-xl bg-zinc-800 text-zinc-200 hover:bg-indigo-600/30 hover:text-indigo-300 active:scale-95 transition-all disabled:opacity-50"
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      {/* ── Hardware command preview — action/eyes/mouth/hardwareCommand từ response gần nhất ── */}
+      <Card className="mb-4">
+        <h3 className="text-sm font-medium text-zinc-100 mb-2">🔧 Hardware Command Preview</h3>
+        <div className="divide-y divide-zinc-900">
+          <StatRow label="Mood" value={<span className="text-sm text-zinc-200 font-mono">{robotMoodLabel}</span>} />
+          <StatRow label="Action" value={<span className="text-sm text-zinc-200 font-mono">{robotActionLabel}</span>} />
+          <StatRow label="Eyes" value={<span className="text-sm text-zinc-200 font-mono">{robotEyesLabel}</span>} />
+          <StatRow label="Mouth" value={<span className="text-sm text-zinc-200 font-mono">{robotMouthLabel}</span>} />
+          <StatRow
+            label="hardwareCommand.type"
+            value={<span className="text-sm text-zinc-200 font-mono">{lastHardwareCommand?.type ?? "none"}</span>}
+          />
+          <StatRow
+            label="hardwareCommand.command"
+            value={<span className="text-sm text-zinc-200 font-mono">{lastHardwareCommand?.command ?? "—"}</span>}
+          />
+        </div>
+        {lastHardwareCommand?.payload && (
+          <pre className="mt-2 text-[11px] bg-zinc-950 border border-zinc-800 rounded-lg p-2 overflow-x-auto text-zinc-400">
+            {JSON.stringify(lastHardwareCommand.payload, null, 2)}
+          </pre>
+        )}
+        <p className="mt-3 text-[11px] text-zinc-600">Phần này sau sẽ map sang ESP32-S3.</p>
+      </Card>
+
       {/* ── Mặt robot + trạng thái + điều khiển (đã có từ trước) ── */}
 
       <RobotVision enabled={cameraTrackingEnabled} debug={visionDebug} onTargetUpdate={handleVisionTarget} />
@@ -1465,6 +1656,7 @@ export default function RobotPage() {
                 ? { x: visionTarget.x, y: visionTarget.y, detected: visionTarget.detected }
                 : undefined
             }
+            gazeOverride={gazeOverride}
             batteryPercent={state?.battery}
             className="w-[min(78vw,78vh)]"
           />
@@ -1557,6 +1749,7 @@ export default function RobotPage() {
                 ? { x: visionTarget.x, y: visionTarget.y, detected: visionTarget.detected }
                 : undefined
             }
+            gazeOverride={gazeOverride}
             batteryPercent={state?.battery}
             className={isFullscreen ? "w-[min(70vw,70vh)]" : "w-56 sm:w-64 md:w-72"}
           />

@@ -136,6 +136,8 @@ export type RobotFaceKioskProps = {
   batteryPercent?: number;
   statusLabel?: string;
   className?: string;
+  /** Hướng nhìn cố định (-1..1) từ lệnh robot-ai (eyes: left/right/up/down/center). */
+  gazeOverride?: { x: number; y: number } | null;
 };
 
 export function RobotFaceKiosk({
@@ -147,12 +149,14 @@ export function RobotFaceKiosk({
   batteryPercent,
   statusLabel,
   className = "",
+  gazeOverride,
 }: RobotFaceKioskProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   useRobotEyes(containerRef, {
     cameraTarget,
     attention: attentionFromState(state),
     enablePointerTracking,
+    gazeOverride,
   });
 
   // Gesture (wave/nod) — hiệu ứng nhất thời, tự clear qua class CSS animation

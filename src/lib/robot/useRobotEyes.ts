@@ -24,6 +24,12 @@ export type UseRobotEyesOptions = {
   attention?: RobotAttention;
   /** Tắt hẳn pointer-tracking (vd khi camera đang là nguồn chính) — mặc định bật. */
   enablePointerTracking?: boolean;
+  /**
+   * Hướng nhìn cố định (-1..1), ưu tiên cao nhất — dùng cho lệnh rời rạc kiểu
+   * "nhìn trái/phải/lên/xuống" từ robot-ai action (xem eyes trong RobotChatResult).
+   * null/undefined = không override, quay lại camera/pointer/idle như bình thường.
+   */
+  gazeOverride?: { x: number; y: number } | null;
 };
 
 const MAX_PUPIL_X_PX = 15; // 12–18px theo yêu cầu
@@ -110,9 +116,14 @@ export function useRobotEyes(
       const cameraTarget = optsRef.current.cameraTarget;
       const attention = optsRef.current.attention ?? "idle";
 
-      // 1) Xác định target thô: camera (nếu detected) > pointer (đã ghi ở
-      //    rawTargetRef qua listener) > idle wander (nếu quá lâu không có input thật).
-      if (cameraTarget?.detected) {
+      // 1) Xác định target thô: gazeOverride (lệnh rời rạc) > camera (nếu detected)
+      //    > pointer (đã ghi ở rawTargetRef qua listener) > idle wander (nếu quá
+      //    lâu không có input thật).
+      const gazeOverride = optsRef.current.gazeOverride;
+      if (gazeOverride) {
+        rawTargetRef.current = { x: gazeOverride.x, y: gazeOverride.y };
+        lastRealInputRef.current = now;
+      } else if (cameraTarget?.detected) {
         rawTargetRef.current = { x: cameraTarget.x, y: cameraTarget.y };
         lastRealInputRef.current = now;
       } else if (now - lastRealInputRef.current > IDLE_TIMEOUT_MS) {
@@ -124,10 +135,13 @@ export function useRobotEyes(
         };
       }
 
-      // 2) Attention state bias — nhẹ, cộng thêm vào target thô.
+      // 2) Attention state bias — nhẹ, cộng thêm vào target thô. Bỏ qua khi có
+      //    gazeOverride, để lệnh nhìn rời rạc không bị kéo lệch.
       let biasX = 0;
       let biasY = 0;
-      if (attention === "thinking") biasY = -0.35; // nhìn lên nhẹ
+      if (gazeOverride) {
+        // no bias — giữ nguyên hướng nhìn được yêu cầu
+      } else if (attention === "thinking") biasY = -0.35; // nhìn lên nhẹ
       else if (attention === "listening" || attention === "speaking") {
         // Nhìn thẳng hơn — kéo target về gần giữa (giảm biên độ thay vì ép cứng 0).
         rawTargetRef.current = {
