@@ -38,7 +38,7 @@ export function applyRobotCommand(
     case "thinking":
       return { mode: "idle", face: "thinking", battery, message: "Robot đang suy nghĩ..." };
     case "speak": {
-      const text = typeof payload?.text === "string" ? payload.text : "Xin chào, tôi là ChinChin.";
+      const text = typeof payload?.text === "string" ? payload.text : "Xin chào, mình là Chuối đây.";
       return { mode: "speaking", face: "speaking", battery, message: text };
     }
     case "turn_left":
@@ -50,7 +50,10 @@ export function applyRobotCommand(
   }
 }
 
-export async function getRobotDevice() {
+export async function getRobotDevice(deviceId?: string) {
+  if (deviceId) {
+    return prisma.device.findUnique({ where: { id: deviceId } });
+  }
   return prisma.device.findFirst({
     where: { device_type: "robot" },
     orderBy: { created_at: "asc" },

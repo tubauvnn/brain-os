@@ -214,7 +214,7 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
 export default function RobotPage() {
   const [state, setState] = useState<RobotStateData | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [speakText, setSpeakText] = useState("Xin chào, tôi là ChinChin.");
+  const [speakText, setSpeakText] = useState("Xin chào, mình là Chuối đây.");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -579,7 +579,7 @@ export default function RobotPage() {
       );
 
       if (command === "greet") {
-        speak("Xin chào, tôi là ChinChin.");
+        speak("Xin chào, mình là Chuối đây.");
       } else if (command === "speak") {
         const text = typeof payload?.text === "string" ? payload.text : speakText;
         speak(text);
@@ -1148,15 +1148,15 @@ export default function RobotPage() {
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto">
       <PageHeader
-        title="Robot Simulator"
-        description="Robot ảo ChinChin — mô phỏng trên web, chưa nối phần cứng."
+        title="Robot Chuối"
+        description="Xin chào, mình là Chuối, robot demo của Brain OS."
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
         <span className="text-[10px] tracking-widest font-mono text-zinc-600 uppercase mr-1">Hardware Ready</span>
         <Badge variant="green">Eye Tracking: pointer + camera fallback</Badge>
         <Badge variant="green">Mic: VU meter + push-to-talk</Badge>
-        <Badge variant="indigo">Mic / OpenAI Realtime: xem panel bên dưới</Badge>
+        <Badge variant="indigo">Voice Assistant: xem panel bên dưới</Badge>
         <Badge variant="default">ESP32-S3 + TFT + INMP441 + MAX98357A: chưa nối (chờ về Hà Nội)</Badge>
       </div>
 

@@ -2,11 +2,11 @@
 
 **Đọc STATE.md trước để biết đã làm gì.** Lịch sử đầy đủ (Xiaozhi, robotonline, bridge, v1, audit bảo mật, nâng cấp `/robot` face/eye-tracking/mic...) còn nguyên trong `STATE.md` và git branch `backup-before-robot-only-cleanup-20260708_050755` — không mất, chỉ không còn là việc cần làm tiếp.
 
-**Trạng thái (2026-07-08):** `/robot` là route sản phẩm duy nhất. Face mới không dùng mascot (`RobotFaceKiosk`), eye tracking mượt hơn (pointer + camera fallback, xem `docs/ROBOT_ONLY_STATUS.md`), mic có VU meter/push-to-talk, và `/api/robot/realtime-token` đã verify thật tạo được ephemeral token cho OpenAI Realtime (WebRTC).
+**Trạng thái (2026-07-08):** `/robot` là route sản phẩm duy nhất, tên robot đã đổi thành **Chuối** ("Robot Chuối", xem `docs/ROBOT_ONLY_STATUS.md` mục "Đổi tên robot thành Chuối"). Face mới không dùng mascot (`RobotFaceKiosk`), eye tracking mượt hơn (pointer + camera fallback), mic/panel "Voice Assistant" có VU meter/push-to-talk, và `/api/robot/realtime-token` đã verify thật tạo được ephemeral token cho OpenAI Realtime (WebRTC).
 
 ## Việc tiếp theo
 
-1. **Test `/robot` trên điện thoại thật** — mở `https://os.irec.vn/robot` trên Chrome/Safari mobile, kiểm tra: eye tracking theo chạm có mượt không, camera tracking (nút "📷 Tracking") có xin quyền + fallback đúng không, mic (panel "🎙️ Mic / OpenAI Realtime") có xin quyền + VU meter chạy không.
+1. **Test `/robot` trên điện thoại thật** — mở `https://os.irec.vn/robot` trên Chrome/Safari mobile, kiểm tra: eye tracking theo chạm có mượt không, camera tracking (nút "📷 Tracking") có xin quyền + fallback đúng không, mic (panel "🎙️ Voice Assistant") có xin quyền + VU meter chạy không.
 2. **Test voice AI thật qua OpenAI Realtime** — `OPENAI_API_KEY` đã có sẵn trong `.env`, `/api/robot/realtime-token` đã verify tạo token thành công qua curl. Việc còn lại: trên trình duyệt thật, bấm "Create session" → "Connect voice" trong panel Mic, nói thử, xác nhận có nghe được giọng AI trả lời qua loa không (chưa test được vòng audio 2 chiều thật vì môi trường này không có mic/loa — xem giới hạn trong `docs/ROBOT_ONLY_STATUS.md`).
 3. **Về Hà Nội lắp ESP32-S3 + TFT + mic (INMP441) + loa (MAX98357A) + servo pan/tilt** — dùng `/robot` làm simulator/UI tham chiếu (không viết lại từ đầu).
 4. **Mapping eye/mouth state sang TFT sau** — `RobotFaceKiosk` đã tách rõ state (idle/happy/thinking/sad/speaking/listening/sleeping/error) + gaze qua CSS var (`--gaze-x`/`--gaze-y`/`--blink`) + `src/lib/robot/tracking.ts` (`targetToPanTilt()` servo-ready) — khi có phần cứng, port logic này sang firmware/driver màn TFT thật thay vì viết lại từ đầu.

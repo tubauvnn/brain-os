@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic";
 const DEFAULT_REALTIME_MODEL = "gpt-realtime-mini";
 const DEFAULT_VOICE = "coral";
 const DEFAULT_INSTRUCTIONS =
-  "Bạn là robot demo của ChinChin/Brain OS. Trả lời tiếng Việt ngắn gọn, thân thiện, dễ nghe. Không nói dài.";
+  "Bạn là Chuối, robot demo của Brain OS. Trả lời tiếng Việt ngắn gọn, thân thiện, dễ nghe. Ưu tiên câu dưới 2 câu.";
 
 type OpenAiClientSecretResponse = {
   value?: string;

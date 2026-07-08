@@ -5,7 +5,7 @@ const DEFAULT_VOICE = "coral";
 const TIMEOUT_MS = 20_000;
 const MAX_TEXT_CHARS = 2000;
 
-const INSTRUCTIONS = "Nói tiếng Việt giọng Bắc, thân thiện, ngắn gọn, tự nhiên, giống robot mascot ChinChin.";
+const INSTRUCTIONS = "Nói tiếng Việt giọng Bắc, thân thiện, ngắn gọn, tự nhiên, giống robot Chuối.";
 
 // Trả thẳng audio nhị phân (không bọc JSON) để client play trực tiếp bằng
 // HTMLAudioElement. Không log text đầy đủ, không log OPENAI_API_KEY.

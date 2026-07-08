@@ -111,3 +111,21 @@ Nằm trong panel mới **"🎙️ Mic / OpenAI Realtime"** (`src/components/rob
 - **INMP441** (mic I2S) — thay cho `getUserMedia` browser, cùng luồng audio input cho OpenAI Realtime.
 - **MAX98357A** (I2S amp) — phát audio output từ OpenAI Realtime thay cho `<audio>` element trên web.
 - **Servo pan/tilt** — đã có sẵn `src/lib/robot/tracking.ts` (`targetToPanTilt()`) tính góc pan/tilt servo-ready từ target camera, chỉ chưa gọi phần cứng thật.
+
+## Đổi tên robot thành Chuối (2026-07-08)
+
+Tên hiển thị/persona của robot trong `/robot` đã đổi từ "ChinChin" sang **Chuối** ("Robot Chuối"). Câu giới thiệu chuẩn: *"Xin chào, mình là Chuối, robot demo của Brain OS."*
+
+**Đã đổi (chỉ trong phạm vi `/robot`):**
+- `PageHeader` title → "Robot Chuối", description → câu giới thiệu ở trên.
+- Badge "Hardware Ready": "Mic / OpenAI Realtime" → "Voice Assistant" (khớp UI mới: Robot Chuối / Eye Tracking / Voice Assistant / Hardware Ready).
+- Header panel mic (`RealtimeMicPanel.tsx`): "🎙️ Mic / OpenAI Realtime" → "🎙️ Voice Assistant".
+- System prompt AI thật (`src/lib/brain/openai-provider.ts`, dùng cho nhánh mặc định của `/api/robot/chat`; `src/lib/brain/cli-agent-router.ts`, dùng cho nhánh `deep:true`; `src/app/api/robot/realtime-token/route.ts`, dùng cho OpenAI Realtime) — đều đổi câu mở đầu thành *"Bạn là Chuối, robot demo của Brain OS. Trả lời tiếng Việt ngắn gọn, thân thiện, dễ nghe. Ưu tiên câu dưới 2 câu."*, kèm 2 rule tường minh cho câu hỏi danh tính và câu chào (xem dưới).
+- `src/lib/brain/system-context.ts` — "Robot ChinChin là interface..." → "Robot Chuối là interface...".
+- `src/lib/brain/session-context.ts` — nhãn role lịch sử hội thoại gửi lại cho AI: "ChinChin:" → "Chuối:" (để AI thấy đúng tên chính nó trong ngữ cảnh nhiều lượt).
+- `src/app/api/robot/tts/route.ts` — instructions giọng đọc: bỏ chữ "mascot", đổi "ChinChin" → "robot Chuối" (đúng yêu cầu không dùng từ mascot).
+- `src/lib/robot.ts` + `src/app/robot/page.tsx` — câu chào mặc định (lệnh `greet`, text mặc định ô "Nói thử", "Xin chào, tôi là ChinChin.") → **"Xin chào, mình là Chuối đây."**
+
+**Không có bộ pattern-matcher "local" tách biệt cho câu "mày là ai"/câu chào trong `/api/robot/chat`** — endpoint này 100% dùng AI thật (OpenAI, hoặc CLI agent khi `deep:true`), không có tầng trả lời tĩnh riêng như `/xiaozhi` (đã disable) từng có. Vì vậy 2 câu bắt buộc ("Mình là Chuối, robot demo của Brain OS." / "Xin chào, mình là Chuối đây.") được đảm bảo bằng **rule tường minh trong system prompt** (không phải hard-code) — đã test thật qua `curl`, AI trả đúng nguyên văn cả 2 câu, `provider:"openai"` (không giả lập).
+
+**Không đụng:** `XiaoziBridgePanel.tsx` (đã archive/không còn render từ phiên 38, còn 1 dòng "ChinChin" trong string test nội bộ — không sửa vì file này đã chết, ngoài phạm vi tìm kiếm yêu cầu lần này), toàn bộ `disabled-routes/`, `docs/archived-xiaozhi/`, Postgres, NPM/Cloudflare, `.env`.
