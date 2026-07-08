@@ -174,3 +174,30 @@ Cả 12 câu local skill (`chào khách`, `mày là ai`, `nhìn tôi`, `cười 
 - Chưa nối phần cứng thật — `hardwareCommand` mới là preview/log, chưa gửi lệnh servo/motor thật.
 - Chưa test UI bằng trình duyệt thật (chỉ verify qua curl + xem HTML SSR có đủ marker "Demo Control Panel"/"Hardware Command Preview"/"Clear memory") — môi trường VPS không có trình duyệt để click thật.
 - `eslint`/`next lint` chưa chạy được (repo chưa có `eslint.config.js`, `next lint` đòi setup tương tác) — đã bù bằng `tsc --noEmit` sạch cho toàn bộ file đổi.
+
+## Reset `/robot` thành 1 màn demo sạch (2026-07-08, sau mục "Smart Robot Demo" ở trên)
+
+Bản "Smart Robot Demo" ở trên (Demo Control Panel 14 nút, Hardware Command Preview panel lộ ngoài, cộng dồn với Hands-free Voice/Camera/OpenAI Realtime từ phiên 38) khiến `/robot` nhìn như dashboard dev, không giống demo sản phẩm. Đã viết lại toàn bộ `src/app/robot/page.tsx` (1884 dòng → ~370 dòng) thành 1 màn sạch.
+
+**Bỏ khỏi UI chính** (không xoá file component, chỉ không còn import/dùng trong `page.tsx` — giống cách `RobotFace.tsx` cũ được giữ lại làm dead code từ phiên 38):
+- Hội thoại giọng nói (Hands-free) — vòng lặp nghe→gửi→nói→nghe tiếp.
+- Camera capture + camera tracking/debug cam (`RobotVision.tsx`).
+- OpenAI Realtime — Create session/Connect voice/Disconnect (`RealtimeMicPanel.tsx`).
+- Hardware Command Preview dạng panel lớn lộ ngoài, Event log dài, khối "Điều khiển" 9 nút DB-backed (`/api/robot/command`) + Status panel (battery/mode/last_command).
+- Demo Control Panel 14 nút → rút còn 6. Badge provider/mood/action rối trong mỗi bong bóng chat.
+
+**Layout mới:** `max-w-[1120px]`, không cần scroll khi vừa mở trang. Desktop grid 2 cột (trái: mặt robot to + dòng trạng thái tiếng Việt; phải: 6 nút demo + chat 6 tin gần nhất). Mobile stack dọc: mặt → nút demo → chat. Header nhỏ chỉ 2 pill tĩnh ("online", "local skills + OpenAI optional") thay khối "Hardware Ready" 4 badge cũ.
+
+**6 nút demo cố định:** Chào khách, Mày là ai, Demo bán hàng, Quay trái, Quay phải, Ngủ đi — đều là local skill, không gọi OpenAI.
+
+**Mic tối giản:** chỉ 1 lượt nghe (Web Speech API, `continuous:false`), final transcript tự gửi vào chat; ẩn hẳn nút mic nếu trình duyệt không hỗ trợ. Không còn hands-free loop/OpenAI STT toggle/session id/latency debug/VU meter/push-to-talk.
+
+**`<details>` "Nâng cao"** (đóng mặc định): provider/mood/action/eyes/mouth/hardwareCommand + raw JSON response cuối + ghi chú "OpenAI chưa cấu hình..." (chỉ hiện khi `provider:"fallback"`, không phải banner đỏ to) + "Sau này map hardwareCommand sang ESP32-S3."
+
+**Reset lịch sử rác:** localStorage đổi sang key `robot_chuoi_demo_v3_history`; lúc mount chủ động xoá 3 key cũ (`robot_chuoi_history`, `robot_chuoi_clean_history`, `robot_chuoi_chat_history`) — không đọc lại lịch sử/câu tiếng nước ngoài cũ. Lần đầu vào bản mới chỉ có đúng 1 câu chào tĩnh: *"Xin chào, mình là Chuối đây."* (không gọi API). Nút Xoá reset về đúng câu chào này.
+
+**Backend không đổi** — `/api/robot/chat` từ phiên 40 đã đúng schema gọn yêu cầu, local skill vẫn chạy trước OpenAI, không rewrite.
+
+**Đã test thật (curl):** `/robot` local + prod `200`; `/xiaozhi`, `/robotonline` vẫn `404`; `mày là ai`/`demo bán hàng`/`quay trái` → `provider:"local"` đúng schema như phiên 40 (backend không đổi). Grep HTML SSR: có đủ "Robot Chuối"/"Demo nhanh"/"Chat với Chuối"/"Nâng cao", **không còn** "Hands-free"/"Camera"/"OpenAI Realtime"/"Hardware Command Preview"/"Event log"/"Xiaozhi"/"Lily"/"ElevenLabs"/"Voice Assistant"/"Điều khiển"/"Trạng thái". `tsc --noEmit` sạch toàn repo.
+
+**Chưa test bằng trình duyệt thật** (môi trường VPS không có trình duyệt) — cần user tự bấm thử trên Chrome/Safari để xác nhận mắt tracking mượt, mic 1 lượt hoạt động đúng, layout không bị vỡ trên tablet thật.
