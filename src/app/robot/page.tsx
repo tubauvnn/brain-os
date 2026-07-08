@@ -77,6 +77,8 @@ const DEMO_BUTTONS: { label: string; text: string }[] = [
   { label: "Ngủ đi", text: "ngủ đi" },
 ];
 
+const AUTO_SPEAK_KEY = "robot_chuoi_auto_speak";
+
 const CHAT_MEMORY_KEY = "robot_chuoi_demo_v3_history";
 // Key cũ của các bản trước — CHỦ ĐỘNG không load, chỉ dọn rác localStorage.
 const OLD_CHAT_MEMORY_KEYS = ["robot_chuoi_history", "robot_chuoi_clean_history", "robot_chuoi_chat_history"];
@@ -133,6 +135,56 @@ export default function RobotPage() {
   const [gazeOverride, setGazeOverride] = useState<{ x: number; y: number } | null>(null);
   const gazeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Fullscreen chỉ phần mặt robot (không phải cả trang) — requestFullscreen()
+  // trên faceCardRef. isFullscreen cũng là fallback layout (fixed inset-0) cho
+  // trình duyệt từ chối requestFullscreen() (vd 1 số bối cảnh iOS Safari).
+  const faceCardRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    function handleFullscreenChange() {
+      if (document.fullscreenElement !== faceCardRef.current) setIsFullscreen(false);
+    }
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+  useEffect(() => {
+    if (isFullscreen && faceCardRef.current && document.fullscreenElement !== faceCardRef.current) {
+      faceCardRef.current.requestFullscreen().catch(() => {
+        // Bị từ chối — vẫn dùng layout fullscreen giả lập qua CSS (fixed inset-0).
+      });
+    }
+  }, [isFullscreen]);
+  function toggleFullscreen() {
+    if (isFullscreen) {
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      setIsFullscreen(false);
+    } else {
+      setIsFullscreen(true);
+    }
+  }
+
+  // Tự động nói — mặc định bật, lưu localStorage để nhớ lựa chọn qua các lần mở lại.
+  const [autoSpeak, setAutoSpeak] = useState(true);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(AUTO_SPEAK_KEY);
+      if (saved !== null) setAutoSpeak(saved === "true");
+    } catch {
+      // bỏ qua — giữ mặc định true
+    }
+  }, []);
+  function toggleAutoSpeak() {
+    setAutoSpeak((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(AUTO_SPEAK_KEY, String(next));
+      } catch {
+        // bỏ qua
+      }
+      return next;
+    });
+  }
 
   const [messages, setMessages] = useState<ChatMessage[]>([GREETING]);
   const [chatInput, setChatInput] = useState("");
@@ -207,11 +259,19 @@ export default function RobotPage() {
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = "vi-VN";
+    utter.rate = 1.0;
+    utter.pitch = 1.0;
+    utter.volume = 1.0;
     if (viVoiceRef.current) utter.voice = viVoiceRef.current;
     utter.onend = onDone;
     utter.onerror = onDone;
     setRobotState("speaking");
     window.speechSynthesis.speak(utter);
+  }
+
+  function stopSpeaking() {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    setRobotState("idle");
   }
 
   function applyGaze(eyes?: string) {
@@ -258,7 +318,11 @@ export default function RobotPage() {
       ]);
       applyGaze(json.eyes);
       const mapped = moodToState(json.mood) ?? "idle";
-      speak(json.reply, () => setRobotState(mapped));
+      if (autoSpeak && json.reply.trim()) {
+        speak(json.reply, () => setRobotState(mapped));
+      } else {
+        setRobotState(mapped);
+      }
     } catch {
       flashError();
     } finally {
@@ -308,14 +372,30 @@ export default function RobotPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* LEFT — mặt robot */}
-        <Card className="flex flex-col items-center justify-center py-10">
-          <RobotFaceKiosk
-            state={robotState as RobotFaceState}
-            gazeOverride={gazeOverride}
-            enablePointerTracking
-            className="w-56 sm:w-64 md:w-72"
-          />
-          <p className="mt-4 text-sm text-zinc-400">{STATUS_TEXT[robotState]}</p>
+        <Card className={isFullscreen ? "p-0" : ""}>
+          <div
+            ref={faceCardRef}
+            className={`relative flex flex-col items-center justify-center ${
+              isFullscreen ? "fixed inset-0 z-50 bg-[#0b0b0f] w-screen h-screen" : "py-10"
+            }`}
+          >
+            <button
+              onClick={toggleFullscreen}
+              title={isFullscreen ? "Thoát toàn màn hình" : "Toàn màn hình"}
+              className={`absolute top-3 right-3 px-3 h-9 rounded-lg text-xs flex items-center gap-1 bg-zinc-800/80 text-zinc-300 hover:bg-indigo-600/30 active:scale-95 transition-all ${
+                isFullscreen ? "z-10" : ""
+              }`}
+            >
+              {isFullscreen ? "⤢ Thoát toàn màn hình" : "⛶ Toàn màn hình"}
+            </button>
+            <RobotFaceKiosk
+              state={robotState as RobotFaceState}
+              gazeOverride={gazeOverride}
+              enablePointerTracking
+              className={isFullscreen ? "w-[min(70vw,70vh)]" : "w-56 sm:w-64 md:w-72"}
+            />
+            <p className="mt-4 text-sm text-zinc-400">{STATUS_TEXT[robotState]}</p>
+          </div>
         </Card>
 
         {/* RIGHT — demo buttons + chat */}
@@ -337,15 +417,33 @@ export default function RobotPage() {
           </Card>
 
           <Card>
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <h3 className="text-sm font-medium text-zinc-100">Chat với Chuối</h3>
-              <button
-                onClick={clearChat}
-                title="Xoá hội thoại"
-                className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-red-600/20 hover:text-red-300 active:scale-95 transition-all"
-              >
-                Xoá
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={toggleAutoSpeak}
+                  title="Chuối tự đọc câu trả lời bằng giọng trình duyệt"
+                  className={`text-[11px] px-2.5 py-1 rounded-lg active:scale-95 transition-all ${
+                    autoSpeak ? "bg-indigo-600/30 text-indigo-300" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                  }`}
+                >
+                  🔊 Tự động nói: {autoSpeak ? "Bật" : "Tắt"}
+                </button>
+                <button
+                  onClick={stopSpeaking}
+                  title="Dừng nói"
+                  className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-zinc-700 active:scale-95 transition-all"
+                >
+                  ⏹ Dừng nói
+                </button>
+                <button
+                  onClick={clearChat}
+                  title="Xoá hội thoại"
+                  className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-red-600/20 hover:text-red-300 active:scale-95 transition-all"
+                >
+                  Xoá
+                </button>
+              </div>
             </div>
             <div className="space-y-2 mb-3">
               {messages.slice(-CHAT_DISPLAY_LIMIT).map((m) => (

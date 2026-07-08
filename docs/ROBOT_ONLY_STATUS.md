@@ -201,3 +201,13 @@ Bản "Smart Robot Demo" ở trên (Demo Control Panel 14 nút, Hardware Command
 **Đã test thật (curl):** `/robot` local + prod `200`; `/xiaozhi`, `/robotonline` vẫn `404`; `mày là ai`/`demo bán hàng`/`quay trái` → `provider:"local"` đúng schema như phiên 40 (backend không đổi). Grep HTML SSR: có đủ "Robot Chuối"/"Demo nhanh"/"Chat với Chuối"/"Nâng cao", **không còn** "Hands-free"/"Camera"/"OpenAI Realtime"/"Hardware Command Preview"/"Event log"/"Xiaozhi"/"Lily"/"ElevenLabs"/"Voice Assistant"/"Điều khiển"/"Trạng thái". `tsc --noEmit` sạch toàn repo.
 
 **Chưa test bằng trình duyệt thật** (môi trường VPS không có trình duyệt) — cần user tự bấm thử trên Chrome/Safari để xác nhận mắt tracking mượt, mic 1 lượt hoạt động đúng, layout không bị vỡ trên tablet thật.
+
+## Khôi phục fullscreen robot + tự động nói (2026-07-08, sau bản reset ở trên)
+
+Bản reset 1 màn sạch ở trên lỡ dọn mất 2 chức năng người dùng cần: fullscreen mặt robot và tự động đọc câu trả lời. Đã thêm lại đúng 2 thứ này, **không** khôi phục lại camera/OpenAI Realtime/hands-free loop phức tạp — UI vẫn 1 màn sạch như trước.
+
+**Fullscreen robot:** nút "⛶ Toàn màn hình" ở góc face card, gọi `requestFullscreen()` trên đúng `<div>` bọc `RobotFaceKiosk` (không phải cả trang) — nên chat/demo buttons tự động không hiển thị khi fullscreen (đúng hành vi chuẩn của Fullscreen API). Có fallback CSS `fixed inset-0` cho trình duyệt từ chối request. Nút đổi thành "⤢ Thoát toàn màn hình" khi đang fullscreen, đồng bộ qua sự kiện `fullscreenchange` (đề phòng user thoát bằng Esc).
+
+**Tự động nói:** toggle trong header card Chat, mặc định bật, lưu `localStorage` key `robot_chuoi_auto_speak`. Nhận reply → nếu bật thì `speechSynthesis` đọc (`lang="vi-VN"`, `rate/pitch/volume=1.0`, ưu tiên voice tiếng Việt nếu máy có) → robot state `speaking` lúc đọc → về lại mood vừa nhận khi đọc xong. Nút "⏹ Dừng nói" cạnh đó: cancel ngay + về `idle`.
+
+**Đã test qua curl** — không đổi hành vi backend. Chưa test bằng trình duyệt/loa thật (môi trường VPS không có).
