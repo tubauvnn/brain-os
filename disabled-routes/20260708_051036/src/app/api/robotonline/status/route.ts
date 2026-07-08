@@ -51,18 +51,21 @@ export async function GET() {
     checkTcpOnline(XIAOZHI_WS_HOST, XIAOZHI_WS_PORT),
   ]);
 
-  return NextResponse.json({
-    ok: true,
-    brainos: { online: true, domain: BRAINOS_DOMAIN },
-    xiaozhi: {
-      httpOta: { host: XIAOZHI_HTTP_HOST, port: XIAOZHI_HTTP_PORT, online: httpOtaOnline },
-      websocket: { host: XIAOZHI_WS_HOST, port: XIAOZHI_WS_PORT, online: websocketOnline },
-      public: false,
+  return NextResponse.json(
+    {
+      ok: true,
+      brainos: { online: true, domain: BRAINOS_DOMAIN },
+      xiaozhi: {
+        httpOta: { host: XIAOZHI_HTTP_HOST, port: XIAOZHI_HTTP_PORT, online: httpOtaOnline },
+        websocket: { host: XIAOZHI_WS_HOST, port: XIAOZHI_WS_PORT, online: websocketOnline },
+        public: false,
+      },
+      bridge: {
+        openaiCompatibleBaseUrl: `${BRAINOS_DOMAIN}/v1`,
+        model: "brainos-local",
+        xiaoziWebhook: `${BRAINOS_DOMAIN}/api/xiaozi/chat`,
+      },
     },
-    bridge: {
-      openaiCompatibleBaseUrl: `${BRAINOS_DOMAIN}/v1`,
-      model: "brainos-local",
-      xiaoziWebhook: `${BRAINOS_DOMAIN}/api/xiaozi/chat`,
-    },
-  });
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }

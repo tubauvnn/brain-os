@@ -14,7 +14,6 @@ const NAV = [
   { href: "/prompts", label: "Prompts", icon: "◇" },
   { href: "/devices", label: "Thiết bị", icon: "◻" },
   { href: "/robot", label: "Robot", icon: "◎" },
-  { href: "/tablet", label: "Tablet", icon: "▦" },
   { href: "/logs", label: "Logs", icon: "≡" },
 ];
 
