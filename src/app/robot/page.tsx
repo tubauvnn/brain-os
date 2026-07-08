@@ -4,8 +4,44 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
+import { RobotFaceKiosk, type RobotFaceState, type RobotGesture } from "@/components/robot/RobotFaceKiosk";
+import { RobotVision, type VisionTarget } from "@/components/robot/RobotVision";
+import { RealtimeMicPanel } from "@/components/robot/RealtimeMicPanel";
+import { targetToPanTilt } from "@/lib/robot/tracking";
 
-type RobotFace = "idle" | "happy" | "speaking" | "sleep" | "surprised" | "thinking";
+// Biểu cảm lưu trong RobotState (DB, điều khiển qua nút lệnh /api/robot/command)
+// — khác với RobotFaceState (component hiển thị), xem mapDbFaceToExpr() bên dưới.
+type DbRobotFace = "idle" | "happy" | "speaking" | "sleep" | "surprised" | "thinking";
+
+function mapDbFaceToExpr(dbFace: string | undefined): RobotFaceState {
+  switch (dbFace as DbRobotFace) {
+    case "happy":
+      return "happy";
+    case "sleep":
+      return "sleeping";
+    // RobotFaceKiosk không có state "surprised" riêng — map về "happy" (biểu
+    // cảm tích cực gần nhất) thay vì "error" (dễ gây hiểu lầm là robot đang lỗi).
+    case "surprised":
+      return "happy";
+    case "thinking":
+      return "thinking";
+    case "speaking":
+      return "speaking";
+    default:
+      return "idle";
+  }
+}
+
+// Ưu tiên hiển thị giống RobotFace cũ: isSpeaking > isListening > isThinking > face nền.
+function resolveDisplayState(
+  base: RobotFaceState,
+  flags: { isSpeaking: boolean; isListening: boolean; isThinking: boolean }
+): RobotFaceState {
+  if (flags.isSpeaking) return "speaking";
+  if (flags.isListening) return "listening";
+  if (flags.isThinking) return "thinking";
+  return base;
+}
 
 type RobotStateData = {
   device_id: string;
@@ -51,11 +87,22 @@ type CommandResponse = {
 type ChatResponse = {
   ok: boolean;
   reply?: string;
+  robot_say?: string;
+  face?: string;
+  action?: string;
   provider?: string;
-  context_used?: boolean;
-  gemini_error?: string | null;
   robot_message_id?: string;
   created_at?: string;
+  error?: string | null;
+  session_id?: string | null;
+  session_message_count?: number | null;
+  latency_ms?: number;
+};
+
+type TranscribeResponse = {
+  ok: boolean;
+  text?: string;
+  provider?: string;
   error?: string;
 };
 
@@ -77,14 +124,14 @@ type ChatMessage = {
   role: "user" | "robot";
   content: string;
   provider?: string | null;
-  geminiError?: string | null;
+  error?: string | null;
   created_at: string;
 };
 
 function providerLabel(provider?: string | null): string {
-  if (provider === "gemini") return "Gemini";
-  if (provider === "fallback") return "Fallback (câu trả lời mẫu)";
-  if (provider === "fallback_429") return "Fallback (Gemini quá tải 429)";
+  if (provider === "openai") return "OpenAI";
+  if (provider === "cli_agent") return "CLI Agent (Codex/Claude/Gemini)";
+  if (provider === "fallback") return "Fallback (chế độ cơ bản)";
   return provider ?? "";
 }
 
@@ -105,6 +152,9 @@ interface SpeechRecognitionEventLike extends Event {
   resultIndex: number;
   results: SpeechRecognitionResultListLike;
 }
+interface SpeechRecognitionErrorEventLike extends Event {
+  error: string;
+}
 interface SpeechRecognitionLike extends EventTarget {
   lang: string;
   continuous: boolean;
@@ -112,7 +162,7 @@ interface SpeechRecognitionLike extends EventTarget {
   start: () => void;
   stop: () => void;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: ((event: Event) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
   onend: (() => void) | null;
 }
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
@@ -125,15 +175,6 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
   };
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
-
-const FACE_STYLE: Record<RobotFace, { emoji: string; glow: string }> = {
-  idle: { emoji: "🙂", glow: "from-zinc-500/30 to-zinc-900/0" },
-  happy: { emoji: "😄", glow: "from-amber-500/30 to-amber-900/0" },
-  speaking: { emoji: "😮", glow: "from-emerald-500/30 to-emerald-900/0" },
-  sleep: { emoji: "😴", glow: "from-indigo-500/30 to-indigo-900/0" },
-  surprised: { emoji: "😲", glow: "from-pink-500/30 to-pink-900/0" },
-  thinking: { emoji: "🤔", glow: "from-purple-500/30 to-purple-900/0" },
-};
 
 const COMMANDS: { command: string; label: string }[] = [
   { command: "greet", label: "Chào" },
@@ -179,14 +220,63 @@ export default function RobotPage() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [speechSupported, setSpeechSupported] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const faceCardRef = useRef<HTMLDivElement>(null);
   const viVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  // Audio OpenAI TTS đang phát (nếu có) — cần ref riêng để interruptRobotSpeaking()
+  // dừng được, khác với speechSynthesis (fallback browser TTS).
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Voice OpenAI TTS chọn được — lưu localStorage `robot_tts_voice`, đọc lại lúc mount.
+  const TTS_VOICES = ["coral", "marin", "cedar", "nova", "shimmer", "alloy"] as const;
+  const [ttsVoice, setTtsVoice] = useState<string>("coral");
+  useEffect(() => {
+    const saved = window.localStorage.getItem("robot_tts_voice");
+    if (saved) setTtsVoice(saved);
+  }, []);
+  function handleTtsVoiceChange(voice: string) {
+    setTtsVoice(voice);
+    window.localStorage.setItem("robot_tts_voice", voice);
+  }
+
+  // Biểu cảm/hành động hiển thị trên RobotFaceKiosk — cập nhật từ 2 nguồn: nút
+  // lệnh thủ công (map qua mapDbFaceToExpr) và response face/action của /api/robot/chat.
+  const [robotFaceExpr, setRobotFaceExpr] = useState<RobotFaceState>("idle");
+  const [robotAction, setRobotAction] = useState<RobotGesture>("none");
 
   // Secure context — mic/camera của trình duyệt chỉ hoạt động trên HTTPS hoặc localhost.
   const [secureContextChecked, setSecureContextChecked] = useState(false);
   const [isSecureContext, setIsSecureContext] = useState(false);
   const [sttSupported, setSttSupported] = useState(false);
+  const [mediaRecorderSupported, setMediaRecorderSupported] = useState(false);
   const [cameraSupported, setCameraSupported] = useState(false);
+
+  // Session — id sinh ở client, lưu localStorage `robot_session_id`, gửi kèm mọi
+  // request /api/robot/chat + /api/robot/transcribe để robot nhớ ngữ cảnh trong phiên.
+  const [sessionId, setSessionId] = useState("");
+  useEffect(() => {
+    const existing = window.localStorage.getItem("robot_session_id");
+    if (existing) {
+      setSessionId(existing);
+      return;
+    }
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `sess-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    window.localStorage.setItem("robot_session_id", id);
+    setSessionId(id);
+  }, []);
+
+  // Panel debug nhỏ (Mục tiêu 4) — cập nhật từ response /api/robot/chat gần nhất.
+  const [lastTranscript, setLastTranscript] = useState("");
+  const [sessionMessageCount, setSessionMessageCount] = useState<number | null>(null);
+  const [lastProvider, setLastProvider] = useState<string | null>(null);
+  const [lastLatencyMs, setLastLatencyMs] = useState<number | null>(null);
+
+  // STT mode cho Hands-free Voice Mode: "openai" (MediaRecorder + /api/robot/transcribe,
+  // nhận diện tiếng Việt tốt hơn) mặc định, hoặc "browser" (SpeechRecognition, phiên 19).
+  const [sttMode, setSttMode] = useState<"browser" | "openai">("openai");
 
   // Chat
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -199,6 +289,28 @@ export default function RobotPage() {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const sttTargetRef = useRef<"chat" | "voice">("chat");
 
+  // Hands-free Voice Mode — vòng lặp nghe → gửi → nói → nghe tiếp, độc lập với
+  // STT thủ công ở trên (recognitionRef) để tránh 2 phiên ghi âm chồng nhau.
+  type VoiceModeStatus = "off" | "listening" | "thinking" | "speaking" | "paused" | "unsupported";
+  const [voiceModeOn, setVoiceModeOn] = useState(false);
+  const [voiceModeStatus, setVoiceModeStatus] = useState<VoiceModeStatus>("off");
+  const [voiceModeTranscript, setVoiceModeTranscript] = useState("");
+  const voiceModeOnRef = useRef(false);
+  const handsFreeRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const lastSentTranscriptRef = useRef("");
+  const turnInProgressRef = useRef(false);
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // OpenAI STT (sttMode === "openai") — MediaRecorder + voice-activity-detection
+  // đơn giản qua Web Audio API, thay cho SpeechRecognition của trình duyệt.
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const vadRafRef = useRef<number | null>(null);
+  const recordStartRef = useRef(0);
+
   // Camera
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -208,13 +320,60 @@ export default function RobotPage() {
   const [capturing, setCapturing] = useState(false);
   const [captureStatus, setCaptureStatus] = useState<string | null>(null);
 
+  // Smart Robot Fullscreen Mode — kiosk: RobotFaceKiosk lớn + camera tracking
+  // (mắt nhìn theo người) + voice mode, tách hoàn toàn khỏi nút "⛶" fullscreen-face
+  // đơn giản cũ (isFullscreen/faceCardRef) để không phá tính năng đã có.
+  const [isFullscreenRobot, setIsFullscreenRobot] = useState(false);
+  const [cameraTrackingEnabled, setCameraTrackingEnabled] = useState(false);
+  const [visionDebug, setVisionDebug] = useState(false);
+  const [visionTarget, setVisionTarget] = useState<VisionTarget>({ detected: false, x: 0, y: 0, size: 0 });
+  const kioskRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     function handleFullscreenChange() {
       setIsFullscreen(document.fullscreenElement === faceCardRef.current);
+      if (document.fullscreenElement !== kioskRef.current) setIsFullscreenRobot(false);
     }
     document.addEventListener("fullscreenchange", handleFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
+
+  // Vào kiosk mode xong DOM mới có kioskRef — request fullscreen ở effect riêng,
+  // không phải ngay trong lúc bấm nút (tránh gọi requestFullscreen() trên node
+  // chưa mount).
+  useEffect(() => {
+    if (isFullscreenRobot && kioskRef.current && document.fullscreenElement !== kioskRef.current) {
+      kioskRef.current.requestFullscreen().catch(() => {
+        // Fullscreen API có thể bị từ chối (vd iOS Safari) — vẫn dùng layout
+        // kiosk giả lập qua CSS (fixed inset-0), chỉ mất phần ẩn thanh địa chỉ.
+      });
+    }
+  }, [isFullscreenRobot]);
+
+  // RobotVision báo target mới ~mỗi 400ms. Việc làm mượt (lerp)/clamp/blink
+  // cho mắt giờ nằm hoàn toàn trong useRobotEyes (bên trong RobotFaceKiosk,
+  // chạy qua requestAnimationFrame + refs, không setState mỗi frame) — ở đây
+  // chỉ cần lưu target thô để truyền xuống làm cameraTarget prop.
+  function handleVisionTarget(target: VisionTarget) {
+    setVisionTarget(target);
+    if (target.detected) {
+      // Servo-ready: chưa gọi phần cứng, chỉ log để dễ nối servo pan/tilt sau này.
+      const panTilt = targetToPanTilt(target);
+      // eslint-disable-next-line no-console
+      console.debug("[RobotVision] pan/tilt", panTilt);
+    }
+  }
+
+  async function enterFullscreenRobotMode() {
+    setIsFullscreenRobot(true);
+    setCameraTrackingEnabled(true);
+    if (!voiceModeOn) await startVoiceMode();
+  }
+
+  function exitFullscreenRobotMode() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    setIsFullscreenRobot(false);
+  }
 
   // Browser TTS (Web Speech API) — không gọi API ngoài, chỉ dùng speechSynthesis có sẵn.
   // TTS không cần secure context nên vẫn hoạt động trên HTTP.
@@ -239,6 +398,9 @@ export default function RobotPage() {
   useEffect(() => {
     setIsSecureContext(typeof window !== "undefined" && window.isSecureContext);
     setSttSupported(getSpeechRecognitionConstructor() !== null);
+    setMediaRecorderSupported(
+      typeof window !== "undefined" && typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia
+    );
     setCameraSupported(typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia);
     setSecureContextChecked(true);
   }, []);
@@ -250,16 +412,96 @@ export default function RobotPage() {
     };
   }, []);
 
-  const speak = useCallback(
-    (text: string) => {
-      if (!soundEnabled || !speechSupported || !text) return;
+  useEffect(() => {
+    voiceModeOnRef.current = voiceModeOn;
+  }, [voiceModeOn]);
+
+  // Dừng hẳn Hands-free Voice Mode (mic + TTS + timer chờ) khi rời trang.
+  useEffect(() => {
+    return () => {
+      handsFreeRecognitionRef.current?.stop();
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+      if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+      currentAudioRef.current?.pause();
+      releaseOpenAiMic();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // onEnd optional — dùng để Hands-free Voice Mode biết lúc nào robot nói xong
+  // mà tự nghe tiếp; các chỗ gọi speak() cũ không truyền onEnd vẫn hoạt động y hệt.
+  // Fallback browser TTS (Web Speech API) — giữ nguyên logic cũ, chỉ đổi tên để
+  // speak() bên dưới có thể gọi lại khi OpenAI TTS lỗi.
+  const speakBrowser = useCallback(
+    (text: string, onEnd?: () => void) => {
+      if (!soundEnabled || !speechSupported || !text) {
+        onEnd?.();
+        return;
+      }
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = "vi-VN";
       if (viVoiceRef.current) utterance.voice = viVoiceRef.current;
+      utterance.onstart = () => setIsSpeaking(true);
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        onEnd?.();
+      };
+      utterance.onerror = () => {
+        setIsSpeaking(false);
+        onEnd?.();
+      };
       window.speechSynthesis.speak(utterance);
     },
     [soundEnabled, speechSupported]
+  );
+
+  // isSpeaking cập nhật từ đây cho MỌI lần gọi speak() (chat, hands-free, "Nói
+  // thử", greet...) — để RobotFace tự động chuyển miệng sang "speaking" bất kể
+  // nguồn gọi. Mặc định thử OpenAI TTS (giọng tự nhiên hơn) trước, lỗi bất kỳ
+  // bước nào (network, API lỗi, autoplay bị chặn...) đều fallback về browser
+  // speechSynthesis — không bao giờ để robot "câm" hoàn toàn.
+  const speak = useCallback(
+    async (text: string, onEnd?: () => void) => {
+      if (!soundEnabled || !text) {
+        onEnd?.();
+        return;
+      }
+
+      currentAudioRef.current?.pause();
+      currentAudioRef.current = null;
+
+      try {
+        const res = await fetch("/api/robot/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, voice: ttsVoice }),
+        });
+        if (!res.ok) throw new Error(`tts http ${res.status}`);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        currentAudioRef.current = audio;
+        audio.onended = () => {
+          setIsSpeaking(false);
+          URL.revokeObjectURL(url);
+          if (currentAudioRef.current === audio) currentAudioRef.current = null;
+          onEnd?.();
+        };
+        audio.onerror = () => {
+          setIsSpeaking(false);
+          URL.revokeObjectURL(url);
+          if (currentAudioRef.current === audio) currentAudioRef.current = null;
+          speakBrowser(text, onEnd);
+        };
+        setIsSpeaking(true);
+        await audio.play();
+      } catch {
+        currentAudioRef.current = null;
+        speakBrowser(text, onEnd);
+      }
+    },
+    [soundEnabled, ttsVoice, speakBrowser]
   );
 
   function toggleSound() {
@@ -292,6 +534,7 @@ export default function RobotPage() {
         return;
       }
       setState(json.state);
+      setRobotFaceExpr(mapDbFaceToExpr(json.state.current_face));
       setError(null);
       const initialLogs = (json.recent_events ?? [])
         .filter((e) => e.event_type === "robot_command")
@@ -321,6 +564,7 @@ export default function RobotPage() {
         return;
       }
       setState(json.state);
+      setRobotFaceExpr(mapDbFaceToExpr(json.state.current_face));
       setError(null);
       setLogs((prev) =>
         [
@@ -360,7 +604,7 @@ export default function RobotPage() {
       const res = await fetch("/api/robot/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, sessionId: sessionId || undefined, source: "text" }),
       });
       const json = (await res.json()) as ChatResponse;
       if (!json.ok || !json.reply) {
@@ -375,11 +619,16 @@ export default function RobotPage() {
           role: "robot",
           content: json.reply as string,
           provider: json.provider,
-          geminiError: json.gemini_error,
+          error: json.error,
           created_at: json.created_at ?? new Date().toISOString(),
         },
       ]);
-      speak(json.reply);
+      if (json.face) setRobotFaceExpr(json.face as RobotFaceState);
+      if (json.action) setRobotAction(json.action as RobotGesture);
+      setSessionMessageCount(json.session_message_count ?? null);
+      setLastProvider(json.provider ?? null);
+      setLastLatencyMs(json.latency_ms ?? null);
+      speak(json.robot_say || json.reply);
     } catch {
       setError("Không kết nối được API");
     } finally {
@@ -427,6 +676,386 @@ export default function RobotPage() {
   function stopListening() {
     recognitionRef.current?.stop();
     setIsListening(false);
+  }
+
+  // ── Hands-free Voice Mode: nghe → gửi → nói → nghe tiếp, lặp liên tục ──
+
+  function scheduleNextListen(delayMs: number) {
+    if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+    cooldownTimerRef.current = setTimeout(() => {
+      cooldownTimerRef.current = null;
+      if (voiceModeOnRef.current) startHandsFreeListening();
+    }, delayMs);
+  }
+
+  // Dispatcher — chọn cơ chế nghe theo sttMode. Cả 2 nhánh dùng chung state
+  // machine (voiceModeStatus/turnInProgressRef/scheduleNextListen/runHandsFreeTurn).
+  function startHandsFreeListening() {
+    if (sttMode === "openai") {
+      startOpenAiListening();
+    } else {
+      startBrowserListening();
+    }
+  }
+
+  function startBrowserListening() {
+    if (!canUseHandsFreeMic) {
+      setVoiceModeStatus("unsupported");
+      return;
+    }
+    const Ctor = getSpeechRecognitionConstructor();
+    if (!Ctor) {
+      setVoiceModeStatus("unsupported");
+      return;
+    }
+    // An toàn nếu gọi lại khi đã có phiên đang chạy (vd sau khi ngắt lời robot).
+    handsFreeRecognitionRef.current?.stop();
+    turnInProgressRef.current = false;
+    setVoiceModeTranscript("");
+
+    const recognition = new Ctor();
+    recognition.lang = "vi-VN";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
+    recognition.onresult = (event) => {
+      let finalText = "";
+      let interimText = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result[0]?.transcript ?? "";
+        if (result.isFinal) finalText += text;
+        else interimText += text;
+      }
+      const combined = (finalText || interimText).trim();
+      if (combined) setVoiceModeTranscript(combined);
+
+      const finalTrimmed = finalText.trim();
+      // Không gửi rỗng, không gửi trùng transcript vừa gửi lượt trước.
+      if (finalTrimmed && finalTrimmed !== lastSentTranscriptRef.current) {
+        turnInProgressRef.current = true;
+        recognition.stop();
+        setLastTranscript(finalTrimmed);
+        runHandsFreeTurn(finalTrimmed, { source: "voice", sttMode: "browser" });
+      }
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        setVoiceModeOn(false);
+        voiceModeOnRef.current = false;
+        setVoiceModeStatus("unsupported");
+        setError("Đã từ chối quyền micro — không thể tiếp tục hội thoại giọng nói.");
+        return;
+      }
+      // "no-speech"/"aborted"/lỗi mạng... — im lặng thử nghe lại nếu voice mode còn bật.
+      if (voiceModeOnRef.current && !turnInProgressRef.current) scheduleNextListen(300);
+    };
+
+    recognition.onend = () => {
+      // Nếu recognition tự kết thúc mà chưa có transcript nào được gửi đi (vd im
+      // lặng quá lâu) và voice mode vẫn bật, tự nghe lại — tránh đứng im mãi mãi.
+      if (voiceModeOnRef.current && !turnInProgressRef.current) scheduleNextListen(300);
+    };
+
+    handsFreeRecognitionRef.current = recognition;
+    setVoiceModeStatus("listening");
+    recognition.start();
+  }
+
+  // OpenAI STT: thu âm bằng MediaRecorder trên stream mic đã xin quyền sẵn
+  // (startVoiceMode), tự dừng khi phát hiện im lặng ~1s (voice-activity-detection
+  // đơn giản qua AnalyserNode), rồi gửi lên /api/robot/transcribe.
+  const SILENCE_MS = 1000;
+  const MIN_RECORD_MS = 500;
+  const MAX_RECORD_MS = 15_000;
+
+  function stopVad() {
+    if (vadRafRef.current !== null) {
+      cancelAnimationFrame(vadRafRef.current);
+      vadRafRef.current = null;
+    }
+  }
+
+  function startOpenAiListening() {
+    if (!canUseHandsFreeMic || !micStreamRef.current || !audioContextRef.current || !analyserRef.current) {
+      setVoiceModeStatus("unsupported");
+      return;
+    }
+    turnInProgressRef.current = false;
+    setVoiceModeTranscript("");
+
+    const stream = micStreamRef.current;
+    const analyser = analyserRef.current;
+    audioChunksRef.current = [];
+
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream);
+    } catch {
+      setVoiceModeStatus("unsupported");
+      return;
+    }
+    mediaRecorderRef.current = recorder;
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => {
+      stopVad();
+      const durationMs = Date.now() - recordStartRef.current;
+      const chunks = audioChunksRef.current;
+      audioChunksRef.current = [];
+      if (durationMs < MIN_RECORD_MS || chunks.length === 0) {
+        // Quá ngắn (im lặng/tiếng động nhỏ) — bỏ qua, nghe lại ngay, không gửi API.
+        if (voiceModeOnRef.current && !turnInProgressRef.current) scheduleNextListen(150);
+        return;
+      }
+      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      turnInProgressRef.current = true;
+      transcribeAndRun(blob, durationMs);
+    };
+
+    recordStartRef.current = Date.now();
+    setVoiceModeStatus("listening");
+    recorder.start();
+
+    // Vòng lặp VAD: theo dõi biên độ âm thanh qua time-domain data, dừng recorder
+    // khi im lặng liên tục >= SILENCE_MS (sau khi đã có tiếng nói), hoặc chạm trần
+    // MAX_RECORD_MS để tránh thu âm vô hạn nếu người dùng nói liên tục/ồn nền.
+    const data = new Uint8Array(analyser.fftSize);
+    let hasSpoken = false;
+    let lastLoudAt = Date.now();
+    const THRESHOLD = 10;
+
+    const tick = () => {
+      if (mediaRecorderRef.current !== recorder || recorder.state !== "recording") return;
+      analyser.getByteTimeDomainData(data);
+      let sumDeviation = 0;
+      for (let i = 0; i < data.length; i++) sumDeviation += Math.abs(data[i] - 128);
+      const volume = sumDeviation / data.length;
+
+      const now = Date.now();
+      if (volume > THRESHOLD) {
+        hasSpoken = true;
+        lastLoudAt = now;
+      }
+      const recordingMs = now - recordStartRef.current;
+      const silenceMs = now - lastLoudAt;
+
+      if ((hasSpoken && silenceMs >= SILENCE_MS) || recordingMs >= MAX_RECORD_MS) {
+        recorder.stop();
+        return;
+      }
+      vadRafRef.current = requestAnimationFrame(tick);
+    };
+    vadRafRef.current = requestAnimationFrame(tick);
+  }
+
+  async function transcribeAndRun(blob: Blob, durationMs: number) {
+    try {
+      const form = new FormData();
+      // Đặt tên file theo mimeType thật của MediaRecorder (Chrome thường ra
+      // audio/webm, Safari có thể ra audio/mp4) — server dùng phần mở rộng để
+      // OpenAI nhận diện đúng định dạng, đặt cứng ".webm" sẽ lỗi 400 nếu sai định dạng.
+      const mimeBase = blob.type.split(";")[0].trim();
+      const ext = { "audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "mp4", "audio/mpeg": "mp3", "audio/wav": "wav" }[
+        mimeBase
+      ] ?? "webm";
+      form.append("audio", blob, `speech.${ext}`);
+      form.append("language", "vi");
+      const res = await fetch("/api/robot/transcribe", { method: "POST", body: form });
+      const json = (await res.json()) as TranscribeResponse;
+      const text = (json.text ?? "").trim();
+      if (!json.ok || !text) {
+        // Không nghe rõ / lỗi transcribe — nghe lại, không gửi chat với nội dung rỗng.
+        turnInProgressRef.current = false;
+        if (voiceModeOnRef.current) scheduleNextListen(300);
+        return;
+      }
+      if (text === lastSentTranscriptRef.current) {
+        turnInProgressRef.current = false;
+        if (voiceModeOnRef.current) scheduleNextListen(300);
+        return;
+      }
+      setLastTranscript(text);
+      setVoiceModeTranscript(text);
+      runHandsFreeTurn(text, { source: "voice", sttMode: "openai", sttProvider: "openai_transcribe", durationMs });
+    } catch {
+      turnInProgressRef.current = false;
+      if (voiceModeOnRef.current) scheduleNextListen(500);
+    }
+  }
+
+  // Một lượt hội thoại hoàn chỉnh: gửi transcript → nhận reply/robot_say → đọc
+  // bằng TTS → sau cooldown 500ms tự nghe lại. Tách riêng khỏi sendChatMessage()
+  // (dùng cho ô chat thủ công) để không đổi hành vi chat cũ.
+  async function runHandsFreeTurn(
+    text: string,
+    meta: { source: "voice"; sttMode: "browser" | "openai"; sttProvider?: string; durationMs?: number }
+  ) {
+    lastSentTranscriptRef.current = text;
+    setMessages((prev) => [
+      ...prev,
+      { id: `local-${Date.now()}`, role: "user", content: text, created_at: new Date().toISOString() },
+    ]);
+    setVoiceModeStatus("thinking");
+
+    let robotSay = "Tôi chưa xử lý được, thử lại nhé.";
+    let robotMessage: ChatMessage = {
+      id: `local-reply-${Date.now()}`,
+      role: "robot",
+      content: robotSay,
+      provider: "fallback",
+      created_at: new Date().toISOString(),
+    };
+
+    try {
+      const res = await fetch("/api/robot/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          sessionId: sessionId || undefined,
+          source: meta.source,
+          sttMode: meta.sttMode,
+          sttProvider: meta.sttProvider,
+          durationMs: meta.durationMs,
+        }),
+      });
+      const json = (await res.json()) as ChatResponse;
+      if (!json.ok || !json.reply) throw new Error(json.error ?? "Chat thất bại");
+      robotSay = json.robot_say || json.reply;
+      robotMessage = {
+        id: json.robot_message_id ?? robotMessage.id,
+        role: "robot",
+        content: json.reply,
+        provider: json.provider,
+        error: json.error,
+        created_at: json.created_at ?? robotMessage.created_at,
+      };
+      if (json.face) setRobotFaceExpr(json.face as RobotFaceState);
+      if (json.action) setRobotAction(json.action as RobotGesture);
+      setSessionMessageCount(json.session_message_count ?? null);
+      setLastProvider(json.provider ?? null);
+      setLastLatencyMs(json.latency_ms ?? null);
+    } catch {
+      // Giữ nguyên robotSay/robotMessage mặc định — robot vẫn phải nói được gì đó.
+    }
+
+    setMessages((prev) => [...prev, robotMessage]);
+    setVoiceModeStatus("speaking");
+    speak(robotSay, () => {
+      turnInProgressRef.current = false;
+      if (!voiceModeOnRef.current) {
+        setVoiceModeStatus("off");
+        return;
+      }
+      setVoiceModeStatus("paused");
+      scheduleNextListen(500);
+    });
+  }
+
+  function releaseOpenAiMic() {
+    stopVad();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+    analyserRef.current = null;
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    micStreamRef.current?.getTracks().forEach((t) => t.stop());
+    micStreamRef.current = null;
+  }
+
+  async function startVoiceMode() {
+    if (!canUseHandsFreeMic) {
+      setVoiceModeStatus("unsupported");
+      return;
+    }
+    // Dừng mic thủ công (chat/voice) nếu đang chạy — tránh 2 phiên ghi âm chồng nhau.
+    stopListening();
+    lastSentTranscriptRef.current = "";
+
+    if (sttMode === "openai") {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        const ctx = new AudioCtx();
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        micStreamRef.current = stream;
+        audioContextRef.current = ctx;
+        analyserRef.current = analyser;
+      } catch {
+        setVoiceModeStatus("unsupported");
+        setError("Không xin được quyền micro cho OpenAI STT.");
+        return;
+      }
+    }
+
+    setVoiceModeOn(true);
+    voiceModeOnRef.current = true;
+    startHandsFreeListening();
+  }
+
+  function stopVoiceMode() {
+    setVoiceModeOn(false);
+    voiceModeOnRef.current = false;
+    if (cooldownTimerRef.current) {
+      clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = null;
+    }
+    handsFreeRecognitionRef.current?.stop();
+    handsFreeRecognitionRef.current = null;
+    releaseOpenAiMic();
+    window.speechSynthesis.cancel();
+    currentAudioRef.current?.pause();
+    currentAudioRef.current = null;
+    setVoiceModeStatus("off");
+  }
+
+  function interruptRobotSpeaking() {
+    window.speechSynthesis.cancel();
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    // cancel()/pause() không đảm bảo bắn onend/onerror trên mọi trình duyệt —
+    // chủ động tắt isSpeaking ngay để RobotFace không bị kẹt ở trạng thái "speaking".
+    setIsSpeaking(false);
+    if (voiceModeOnRef.current) {
+      if (cooldownTimerRef.current) {
+        clearTimeout(cooldownTimerRef.current);
+        cooldownTimerRef.current = null;
+      }
+      turnInProgressRef.current = false;
+      startHandsFreeListening();
+    }
+  }
+
+  function handsFreeStatusLabel(): string {
+    if (!secureContextChecked) return "Đang kiểm tra...";
+    if (!canUseHandsFreeMic) return "Mic không hỗ trợ";
+    switch (voiceModeStatus) {
+      case "listening":
+        return "Đang nghe";
+      case "thinking":
+        return "Đang nghĩ";
+      case "speaking":
+        return "Đang nói";
+      case "paused":
+        return "Tạm dừng";
+      case "unsupported":
+        return "Mic không hỗ trợ";
+      default:
+        return voiceModeOn ? "..." : "Đã tắt";
+    }
   }
 
   async function startCamera() {
@@ -489,8 +1118,6 @@ export default function RobotPage() {
     }
   }
 
-  const face = (state?.current_face ?? "idle") as RobotFace;
-  const faceStyle = FACE_STYLE[face] ?? FACE_STYLE.idle;
   const battery = state?.battery ?? 0;
   const batteryColor =
     battery > 50 ? "bg-emerald-500" : battery > 20 ? "bg-amber-500" : "bg-red-500";
@@ -499,6 +1126,10 @@ export default function RobotPage() {
   const showInsecureWarning = secureContextChecked && !isSecureContext;
   const canUseMic = secureContextChecked && isSecureContext && sttSupported;
   const canUseCamera = secureContextChecked && isSecureContext && cameraSupported;
+  // Hands-free dùng capability riêng theo sttMode — OpenAI STT cần MediaRecorder,
+  // không phải SpeechRecognition (khác với 2 nút mic thủ công ở khối Chat/Voice).
+  const canUseHandsFreeMic =
+    secureContextChecked && isSecureContext && (sttMode === "browser" ? sttSupported : mediaRecorderSupported);
 
   function micTitle(): string {
     if (!secureContextChecked) return "Đang kiểm tra...";
@@ -520,6 +1151,14 @@ export default function RobotPage() {
         title="Robot Simulator"
         description="Robot ảo ChinChin — mô phỏng trên web, chưa nối phần cứng."
       />
+
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-[10px] tracking-widest font-mono text-zinc-600 uppercase mr-1">Hardware Ready</span>
+        <Badge variant="green">Eye Tracking: pointer + camera fallback</Badge>
+        <Badge variant="green">Mic: VU meter + push-to-talk</Badge>
+        <Badge variant="indigo">Mic / OpenAI Realtime: xem panel bên dưới</Badge>
+        <Badge variant="default">ESP32-S3 + TFT + INMP441 + MAX98357A: chưa nối (chờ về Hà Nội)</Badge>
+      </div>
 
       {showInsecureWarning && (
         <div className="mb-4 flex items-start gap-2 text-sm text-amber-300 bg-amber-950/40 border border-amber-800 rounded-lg px-4 py-3">
@@ -559,9 +1198,10 @@ export default function RobotPage() {
                 {m.role === "robot" && m.provider && (
                   <p className="mt-1 text-[10px] text-zinc-500 font-mono">{providerLabel(m.provider)}</p>
                 )}
-                {m.role === "robot" && m.geminiError && (
+                {m.role === "robot" && m.provider === "fallback" && (
                   <p className="mt-1 text-[10px] text-amber-500">
-                    ⚠️ Gemini lỗi ({m.geminiError}), đã dùng câu trả lời mẫu.
+                    ⚠️ Chưa gọi được AI thật, đang dùng chế độ cơ bản.
+                    {m.error ? ` (${m.error})` : ""}
                   </p>
                 )}
               </div>
@@ -572,8 +1212,8 @@ export default function RobotPage() {
         <div className="flex gap-2">
           <button
             onClick={() => (isListening ? stopListening() : startListening("chat"))}
-            disabled={!canUseMic}
-            title={micTitle()}
+            disabled={!canUseMic || voiceModeOn}
+            title={voiceModeOn ? "Đang ở chế độ hội thoại giọng nói — tắt để dùng mic thủ công" : micTitle()}
             className={`min-h-[3.5rem] w-14 shrink-0 rounded-xl flex items-center justify-center text-xl transition-all active:scale-95 disabled:opacity-40 ${
               isListening ? "bg-red-600/40 text-red-300" : "bg-zinc-800 text-zinc-300 hover:bg-indigo-600/30"
             }`}
@@ -600,13 +1240,107 @@ export default function RobotPage() {
       </Card>
       </div>
 
+      <div id="handsfree">
+      <Card className="mb-4">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 className="text-sm font-medium text-zinc-100">🗣️ Hội thoại giọng nói (Hands-free)</h3>
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-lg bg-zinc-900 border border-zinc-800 overflow-hidden text-xs">
+              <button
+                onClick={() => setSttMode("openai")}
+                disabled={voiceModeOn}
+                className={`px-2.5 py-1.5 transition-all disabled:opacity-50 ${
+                  sttMode === "openai" ? "bg-indigo-600/40 text-indigo-200" : "text-zinc-400 hover:bg-zinc-800"
+                }`}
+              >
+                OpenAI STT
+              </button>
+              <button
+                onClick={() => setSttMode("browser")}
+                disabled={voiceModeOn}
+                className={`px-2.5 py-1.5 transition-all disabled:opacity-50 ${
+                  sttMode === "browser" ? "bg-indigo-600/40 text-indigo-200" : "text-zinc-400 hover:bg-zinc-800"
+                }`}
+              >
+                Browser STT
+              </button>
+            </div>
+            <Badge variant={voiceModeOn ? "green" : "default"}>{handsFreeStatusLabel()}</Badge>
+          </div>
+        </div>
+
+        {sttMode === "browser" && !sttSupported && secureContextChecked && (
+          <p className="text-xs text-amber-400 mb-3">
+            Trình duyệt này chưa hỗ trợ voice recognition, dùng Chrome Android.
+          </p>
+        )}
+        {sttMode === "openai" && !mediaRecorderSupported && secureContextChecked && (
+          <p className="text-xs text-amber-400 mb-3">
+            Trình duyệt này chưa hỗ trợ ghi âm (MediaRecorder), thử đổi sang &quot;Browser STT&quot; hoặc dùng Chrome Android.
+          </p>
+        )}
+        {canUseHandsFreeMic === false && secureContextChecked && isSecureContext === false && (
+          <p className="text-xs text-amber-400 mb-3">
+            Cần truy cập qua <span className="font-mono">https://os.irec.vn/robot</span> (HTTPS) để dùng mic trên thiết bị thật.
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-3 mb-3">
+          {!voiceModeOn ? (
+            <button
+              onClick={startVoiceMode}
+              disabled={!canUseHandsFreeMic}
+              title={canUseHandsFreeMic ? "Bật hội thoại giọng nói" : "Mic không khả dụng (xem cảnh báo phía trên)"}
+              className="min-h-[3.5rem] px-5 rounded-xl bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600/50 active:scale-95 transition-all disabled:opacity-40 text-base font-medium"
+            >
+              🎙️ Bật hội thoại giọng nói
+            </button>
+          ) : (
+            <button
+              onClick={stopVoiceMode}
+              className="min-h-[3.5rem] px-5 rounded-xl bg-red-600/30 text-red-300 hover:bg-red-600/50 active:scale-95 transition-all text-base font-medium"
+            >
+              ⏹ Tắt hội thoại giọng nói
+            </button>
+          )}
+          <button
+            onClick={interruptRobotSpeaking}
+            disabled={!voiceModeOn || voiceModeStatus !== "speaking"}
+            className="min-h-[3.5rem] px-5 rounded-xl bg-zinc-800 text-zinc-300 hover:bg-amber-600/30 hover:text-amber-300 active:scale-95 transition-all disabled:opacity-40 text-base font-medium"
+          >
+            ✋ Ngắt robot đang nói
+          </button>
+        </div>
+
+        <details className="text-xs text-zinc-500">
+          <summary className="cursor-pointer select-none hover:text-zinc-300">Xem transcript</summary>
+          <p className="mt-2 whitespace-pre-wrap text-zinc-400">{voiceModeTranscript || "(chưa có nội dung)"}</p>
+        </details>
+
+        <p className="mt-3 text-[11px] text-zinc-600">
+          Khi bật, robot tự nghe → gửi → nói, rồi tự nghe lại — không cần bấm gửi thủ công. Bấm &quot;Tắt&quot; để dừng hẳn.
+        </p>
+
+        <div className="mt-3 pt-3 border-t border-zinc-900 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 text-[11px] font-mono text-zinc-500">
+          <span>STT: {sttMode === "openai" ? "OpenAI" : "Browser"}</span>
+          <span>Provider: {lastProvider ?? "—"}</span>
+          <span>Latency: {lastLatencyMs !== null ? `${lastLatencyMs}ms` : "—"}</span>
+          <span>Session: {sessionId ? `${sessionId.slice(0, 8)}...` : "—"}</span>
+          <span>Saved: {sessionMessageCount ?? "—"}</span>
+          <span className="truncate" title={lastTranscript}>
+            Last: {lastTranscript || "—"}
+          </span>
+        </div>
+      </Card>
+      </div>
+
       <div id="voice">
       <Card className="mb-4 flex flex-col items-center text-center py-8">
         <h3 className="text-sm font-medium text-zinc-100 mb-4">🎤 Voice / Mic</h3>
         <button
           onClick={() => (isListening ? stopListening() : startListening("voice"))}
-          disabled={!canUseMic}
-          title={micTitle()}
+          disabled={!canUseMic || voiceModeOn}
+          title={voiceModeOn ? "Đang ở chế độ hội thoại giọng nói — tắt để dùng mic thủ công" : micTitle()}
           className={`w-28 h-28 rounded-full flex items-center justify-center text-4xl transition-all active:scale-95 disabled:opacity-40 ${
             isListening ? "bg-red-600/40 text-red-300" : "bg-zinc-800 text-zinc-300 hover:bg-indigo-600/30"
           }`}
@@ -712,6 +1446,61 @@ export default function RobotPage() {
 
       {/* ── Mặt robot + trạng thái + điều khiển (đã có từ trước) ── */}
 
+      <RobotVision enabled={cameraTrackingEnabled} debug={visionDebug} onTargetUpdate={handleVisionTarget} />
+
+      {isFullscreenRobot && (
+        <div
+          ref={kioskRef}
+          className="fixed inset-0 z-50 bg-black flex flex-col items-center justify-center gap-4 p-6"
+        >
+          <RobotFaceKiosk
+            state={resolveDisplayState(robotFaceExpr, {
+              isSpeaking,
+              isListening: isListening || voiceModeStatus === "listening",
+              isThinking: chatLoading || voiceModeStatus === "thinking",
+            })}
+            gesture={robotAction}
+            cameraTarget={
+              cameraTrackingEnabled
+                ? { x: visionTarget.x, y: visionTarget.y, detected: visionTarget.detected }
+                : undefined
+            }
+            batteryPercent={state?.battery}
+            className="w-[min(78vw,78vh)]"
+          />
+          <p className="text-sm text-zinc-300">
+            {handsFreeStatusLabel()}
+            {cameraTrackingEnabled ? ` · ${visionTarget.detected ? "Nhìn thấy bạn" : "Đang tìm người"}` : ""}
+          </p>
+          {(voiceModeTranscript || lastTranscript) && (
+            <p className="text-xs text-zinc-500 max-w-md text-center truncate">
+              {voiceModeTranscript || lastTranscript}
+            </p>
+          )}
+          {lastProvider && <p className="text-[10px] font-mono text-zinc-600">{lastProvider}</p>}
+          <div className="flex flex-wrap justify-center gap-2 mt-2">
+            <button
+              onClick={exitFullscreenRobotMode}
+              className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-200 hover:bg-red-600/30 active:scale-95 transition-all text-sm"
+            >
+              ⤢ Exit Fullscreen
+            </button>
+            <button
+              onClick={() => setCameraTrackingEnabled((v) => !v)}
+              className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 hover:bg-indigo-600/30 active:scale-95 transition-all text-sm"
+            >
+              📷 Tracking: {cameraTrackingEnabled ? "Bật" : "Tắt"}
+            </button>
+            <button
+              onClick={() => setVisionDebug((v) => !v)}
+              className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 hover:bg-indigo-600/30 active:scale-95 transition-all text-sm"
+            >
+              🐞 Debug cam: {visionDebug ? "Bật" : "Tắt"}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         <div
           ref={faceCardRef}
@@ -719,29 +1508,69 @@ export default function RobotPage() {
             isFullscreen ? "py-0 min-h-screen justify-center" : "py-10 sm:py-14"
           }`}
         >
-          <button
-            onClick={toggleFullscreen}
-            title={isFullscreen ? "Thoát toàn màn hình" : "Toàn màn hình"}
-            className="absolute top-3 right-3 w-10 h-10 flex items-center justify-center rounded-lg bg-zinc-800/80 text-zinc-300 hover:bg-indigo-600/40 active:scale-95 transition-all text-lg"
-          >
-            {isFullscreen ? "⤢" : "⛶"}
-          </button>
-          <div className="relative flex items-center justify-center">
-            <div
-              className={`absolute inset-0 -m-8 rounded-full blur-3xl bg-[radial-gradient(circle,var(--tw-gradient-stops))] ${faceStyle.glow}`}
-              aria-hidden
-            />
-            <div
-              className={`relative leading-none select-none ${
-                isFullscreen
-                  ? "text-[min(50vw,50vh)]"
-                  : "text-[100px] sm:text-[140px] md:text-[160px]"
+          <div className="absolute top-3 left-3">
+            <span className="text-[10px] tracking-widest font-mono text-zinc-500 uppercase">Eye Tracking</span>
+          </div>
+          <div className="absolute top-3 right-3 flex items-center gap-2">
+            <button
+              onClick={() => setVisionDebug((v) => !v)}
+              title="Bật/tắt xem trước camera tracking (debug)"
+              className={`px-2.5 h-10 rounded-lg text-xs flex items-center gap-1 transition-all active:scale-95 ${
+                visionDebug ? "bg-indigo-600/40 text-indigo-200" : "bg-zinc-800/80 text-zinc-300 hover:bg-indigo-600/30"
               }`}
             >
-              {faceStyle.emoji}
-            </div>
+              🐞 Debug cam
+            </button>
+            <button
+              onClick={() => setCameraTrackingEnabled((v) => !v)}
+              title="Bật/tắt camera nhìn theo người (không vào fullscreen)"
+              className={`px-2.5 h-10 rounded-lg text-xs flex items-center gap-1 transition-all active:scale-95 ${
+                cameraTrackingEnabled ? "bg-teal-600/40 text-teal-200" : "bg-zinc-800/80 text-zinc-300 hover:bg-indigo-600/30"
+              }`}
+            >
+              📷 Tracking
+            </button>
+            <button
+              onClick={enterFullscreenRobotMode}
+              title="Smart Robot Fullscreen Mode — mặt lớn, camera nhìn theo người, voice mode"
+              className="px-2.5 h-10 rounded-lg text-xs flex items-center gap-1 bg-zinc-800/80 text-zinc-300 hover:bg-indigo-600/30 active:scale-95 transition-all"
+            >
+              🖥️ Fullscreen Robot
+            </button>
+            <button
+              onClick={toggleFullscreen}
+              title={isFullscreen ? "Thoát toàn màn hình" : "Toàn màn hình (chỉ mặt)"}
+              className="w-10 h-10 flex items-center justify-center rounded-lg bg-zinc-800/80 text-zinc-300 hover:bg-indigo-600/40 active:scale-95 transition-all text-lg"
+            >
+              {isFullscreen ? "⤢" : "⛶"}
+            </button>
           </div>
-          <Badge variant="indigo">{state?.current_mode ?? "..."}</Badge>
+          <RobotFaceKiosk
+            state={resolveDisplayState(robotFaceExpr, {
+              isSpeaking,
+              isListening: isListening || voiceModeStatus === "listening",
+              isThinking: chatLoading || voiceModeStatus === "thinking",
+            })}
+            gesture={robotAction}
+            cameraTarget={
+              cameraTrackingEnabled
+                ? { x: visionTarget.x, y: visionTarget.y, detected: visionTarget.detected }
+                : undefined
+            }
+            batteryPercent={state?.battery}
+            className={isFullscreen ? "w-[min(70vw,70vh)]" : "w-56 sm:w-64 md:w-72"}
+          />
+          <div className="mt-3 flex items-center gap-2">
+            <Badge variant="indigo">{state?.current_mode ?? "..."}</Badge>
+            <Badge variant="default">
+              {cameraTrackingEnabled ? "Eye: Camera" : "Eye: Pointer"}
+            </Badge>
+            {cameraTrackingEnabled && (
+              <Badge variant={visionTarget.detected ? "green" : "default"}>
+                {visionTarget.detected ? "Nhìn thấy bạn" : "Đang tìm người"}
+              </Badge>
+            )}
+          </div>
         </div>
 
         <Card>
@@ -783,17 +1612,32 @@ export default function RobotPage() {
         </Card>
       </div>
 
+      <RealtimeMicPanel />
+
       <Card className="mb-4">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 className="text-sm font-medium text-zinc-100">Điều khiển</h3>
-          <button
-            onClick={toggleSound}
-            disabled={!speechSupported}
-            title={speechSupported ? "Bật/tắt đọc giọng nói" : "Trình duyệt không hỗ trợ đọc giọng nói"}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 text-xs text-zinc-300 hover:bg-indigo-600/30 active:scale-95 transition-all disabled:opacity-40"
-          >
-            {soundEnabled ? "🔊 Âm thanh: Bật" : "🔇 Âm thanh: Tắt"}
-          </button>
+          <div className="flex items-center gap-2">
+            <select
+              value={ttsVoice}
+              onChange={(e) => handleTtsVoiceChange(e.target.value)}
+              title="Giọng đọc OpenAI TTS"
+              className="px-2 py-1.5 rounded-lg bg-zinc-800 text-xs text-zinc-300 border border-zinc-700"
+            >
+              {TTS_VOICES.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={toggleSound}
+              title="Bật/tắt đọc giọng nói"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 text-xs text-zinc-300 hover:bg-indigo-600/30 active:scale-95 transition-all"
+            >
+              {soundEnabled ? "🔊 Âm thanh: Bật" : "🔇 Âm thanh: Tắt"}
+            </button>
+          </div>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 gap-3 mb-4">
           {COMMANDS.map((c) => (
