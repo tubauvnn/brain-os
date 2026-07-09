@@ -4,7 +4,7 @@ import { recallMemory, writeMemory } from "@/lib/memory";
 import { recallKnowledge } from "@/lib/knowledge";
 import { ModelRouter, DEFAULT_MODEL_PROVIDER } from "@/lib/model";
 import { DeviceManager } from "@/lib/device";
-import { VideoAgent } from "@/lib/video";
+import { TaskOrchestrator } from "@/lib/orchestrator";
 import { resolveIntent, type Intent } from "./intent-resolver";
 import type { ConversationInput, ConversationResult, ExecutionContext } from "./types";
 
@@ -178,16 +178,17 @@ async function handleRobotCommand(message: string): Promise<IntentOutcome> {
   };
 }
 
-// intent "video_request" — giao message cho Video Agent (src/lib/video/),
-// pipeline Story Planner → Scene Planner → Prompt Generator → Provider →
-// Output JSON. Conversation Agent KHÔNG tự planning, KHÔNG tự gọi provider —
-// chỉ nhận VideoPlan và trả nguyên JSON đó làm reply (giữ contract
-// ConversationResult không đổi, không thêm field mới).
+// intent "video_request" — giao cho Task Orchestrator (src/lib/orchestrator/),
+// KHÔNG gọi VideoAgent trực tiếp (Phase 4: Conversation Agent chỉ biết
+// Orchestrator, Orchestrator tự chọn agent qua canHandle(intent)). Orchestrator
+// tự chạy Agent Selection → Agent Execution (VideoAgent → Story Planner →
+// Scene Planner → Prompt Generator → Provider) và trả unified result — trả
+// nguyên JSON đó làm reply (giữ contract ConversationResult không đổi).
 async function handleVideoRequest(message: string): Promise<IntentOutcome> {
-  const plan = await VideoAgent.generate({ prompt: message });
+  const result = await TaskOrchestrator.run("video_request", message);
 
   return {
-    reply: JSON.stringify(plan, null, 2),
+    reply: JSON.stringify(result, null, 2),
     memoryUsed: 0,
     knowledgeUsed: 0,
     memoryWritten: false,
