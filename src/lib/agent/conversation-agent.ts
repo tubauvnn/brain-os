@@ -4,6 +4,7 @@ import { recallMemory, writeMemory } from "@/lib/memory";
 import { recallKnowledge } from "@/lib/knowledge";
 import { ModelRouter, DEFAULT_MODEL_PROVIDER } from "@/lib/model";
 import { DeviceManager } from "@/lib/device";
+import { VideoAgent } from "@/lib/video";
 import { resolveIntent, type Intent } from "./intent-resolver";
 import type { ConversationInput, ConversationResult, ExecutionContext } from "./types";
 
@@ -177,6 +178,22 @@ async function handleRobotCommand(message: string): Promise<IntentOutcome> {
   };
 }
 
+// intent "video_request" — giao message cho Video Agent (src/lib/video/),
+// pipeline Story Planner → Scene Planner → Prompt Generator → Provider →
+// Output JSON. Conversation Agent KHÔNG tự planning, KHÔNG tự gọi provider —
+// chỉ nhận VideoPlan và trả nguyên JSON đó làm reply (giữ contract
+// ConversationResult không đổi, không thêm field mới).
+async function handleVideoRequest(message: string): Promise<IntentOutcome> {
+  const plan = await VideoAgent.generate({ prompt: message });
+
+  return {
+    reply: JSON.stringify(plan, null, 2),
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+  };
+}
+
 // intent "unknown" — fallback an toàn, không đoán bừa, không gọi model.
 function handleUnknown(): IntentOutcome {
   return {
@@ -197,6 +214,8 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
       return handleVoiceRequest();
     case "robot_command":
       return handleRobotCommand(message);
+    case "video_request":
+      return handleVideoRequest(message);
     case "unknown":
       return handleUnknown();
     case "chat":
