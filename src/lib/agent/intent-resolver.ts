@@ -24,7 +24,8 @@ const RECALL_MEMORY_PHRASES = ["đã nói gì về", "nhớ gì về", "nhớ kh
 
 // robot_command đòi hỏi cả 2: có từ "robot" VÀ 1 động từ hành động — tránh khớp
 // nhầm câu chat thường chứa 1 trong các âm tiết ngắn này.
-const ROBOT_ACTION_WORDS = ["đi", "tới", "quay", "dừng", "tiến", "lùi", "di chuyển"];
+// "chào"/"greet" thêm cho Phase 2 (Device Manager, lệnh "robot chào khách").
+const ROBOT_ACTION_WORDS = ["đi", "tới", "quay", "dừng", "tiến", "lùi", "di chuyển", "chào", "greet"];
 
 const VOICE_REQUEST_PHRASES = ["nói câu", "đọc câu", "đọc to", "nói to"];
 

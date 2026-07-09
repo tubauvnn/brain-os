@@ -3,6 +3,7 @@ import { log } from "@/lib/logger";
 import { recallMemory, writeMemory } from "@/lib/memory";
 import { recallKnowledge } from "@/lib/knowledge";
 import { ModelRouter, DEFAULT_MODEL_PROVIDER } from "@/lib/model";
+import { DeviceManager } from "@/lib/device";
 import { resolveIntent, type Intent } from "./intent-resolver";
 import type { ConversationInput, ConversationResult, ExecutionContext } from "./types";
 
@@ -148,10 +149,28 @@ function handleVoiceRequest(): IntentOutcome {
   };
 }
 
-// intent "robot_command" — CHỈ báo nhận diện, KHÔNG thực thi lệnh robot.
-function handleRobotCommand(): IntentOutcome {
+// intent "robot_command" — dịch message sang 1 Device Command cố định (không
+// suy luận nhiều bước) rồi giao cho Device Manager (src/lib/device/) thực thi.
+// Conversation Agent KHÔNG tự nói chuyện với Mock Robot Device — luôn qua
+// Device Manager, đúng kiến trúc Conversation Agent → Intent Resolver →
+// Device Manager → Device Provider. Lifecycle logging (received/resolved/
+// started/completed|failed) do Device Manager tự làm, không log trùng ở đây.
+const ROBOT_STATUS_WORDS = ["trạng thái", "status"];
+
+function buildRobotDeviceCommand(message: string): { command: string; payload?: Record<string, unknown> } {
+  const text = message.trim().toLowerCase();
+  if (ROBOT_STATUS_WORDS.some((w) => text.includes(w))) {
+    return { command: "status" };
+  }
+  return { command: "greet", payload: { text: message.trim() } };
+}
+
+async function handleRobotCommand(message: string): Promise<IntentOutcome> {
+  const { command, payload } = buildRobotDeviceCommand(message);
+  const result = await DeviceManager.execute({ deviceType: "robot", command, payload });
+
   return {
-    reply: "Mình nhận diện đây là một lệnh robot, nhưng Conversation Agent chưa thực thi lệnh robot ở bước này.",
+    reply: result.message,
     memoryUsed: 0,
     knowledgeUsed: 0,
     memoryWritten: false,
@@ -177,7 +196,7 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
     case "voice_request":
       return handleVoiceRequest();
     case "robot_command":
-      return handleRobotCommand();
+      return handleRobotCommand(message);
     case "unknown":
       return handleUnknown();
     case "chat":
