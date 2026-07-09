@@ -227,6 +227,22 @@ async function handleImageRequest(message: string): Promise<IntentOutcome> {
   };
 }
 
+// intent "project_request" — giao cho Task Orchestrator, cùng nguyên tắc các
+// handler khác: Conversation Agent KHÔNG tự gọi Project Agent, chỉ biết
+// Orchestrator. Orchestrator chọn project-task-agent qua
+// canHandle("project_request") để create/open/save/update/list dự án (JSON
+// local, xem src/lib/project/).
+async function handleProjectRequest(message: string): Promise<IntentOutcome> {
+  const result = await TaskOrchestrator.run("project_request", message);
+
+  return {
+    reply: JSON.stringify(result, null, 2),
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+  };
+}
+
 // intent "unknown" — fallback an toàn, không đoán bừa, không gọi model.
 function handleUnknown(): IntentOutcome {
   return {
@@ -253,6 +269,8 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
       return handleCharacterRequest(message);
     case "image_request":
       return handleImageRequest(message);
+    case "project_request":
+      return handleProjectRequest(message);
     case "unknown":
       return handleUnknown();
     case "chat":

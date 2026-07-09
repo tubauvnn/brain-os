@@ -2,9 +2,11 @@ import { randomUUID } from "crypto";
 import { log } from "@/lib/logger";
 import type {
   AgentMetadata,
+  ContextProvider,
   ExecutionPlan,
   ExecutionStep,
   OrchestratorResult,
+  ProjectRecorder,
   Task,
   TaskAgent,
   TaskAgentResult,
@@ -24,8 +26,22 @@ import type {
 
 const agents: TaskAgent[] = [];
 
+// Phase 7 — 2 seam tuỳ chọn (mặc định null = tắt, hành vi y hệt trước Phase
+// 7). KHÔNG import Project Agent cụ thể ở đây — chỉ giữ contract, implementation
+// thật đăng ký qua setContextProvider()/setProjectRecorder() ở composition root.
+let contextProvider: ContextProvider | null = null;
+let projectRecorder: ProjectRecorder | null = null;
+
 function register(agent: TaskAgent): void {
   agents.push(agent);
+}
+
+function setContextProvider(provider: ContextProvider | null): void {
+  contextProvider = provider;
+}
+
+function setProjectRecorder(recorder: ProjectRecorder | null): void {
+  projectRecorder = recorder;
 }
 
 function listAgents(): AgentMetadata[] {
@@ -56,7 +72,18 @@ function buildPlan(intent: string, selected: TaskAgent[]): ExecutionPlan {
 async function run(intent: string, input: string, payload?: Record<string, unknown>): Promise<OrchestratorResult> {
   const taskId = randomUUID();
 
-  await log({ action: "task.created", entity: "Task", entity_id: taskId, payload: { intent, input } });
+  // Phase 7 — Project Context (nếu có provider đăng ký + có project đang mở)
+  // lấy 1 lần, gắn vào MỌI Task bên dưới. Đây là cơ chế "agent nhận Project
+  // Context tự động" — agent nào không đọc payload.projectContext thì đơn
+  // giản bỏ qua, không lỗi.
+  const projectContext = contextProvider ? await contextProvider.getContext() : null;
+
+  await log({
+    action: "task.created",
+    entity: "Task",
+    entity_id: taskId,
+    payload: { intent, input, hasProjectContext: !!projectContext },
+  });
 
   const selected = selectAgents(intent);
   const plan = buildPlan(intent, selected);
@@ -76,7 +103,7 @@ async function run(intent: string, input: string, payload?: Record<string, unkno
 
     await log({ action: "agent.selected", entity: "Task", entity_id: taskId, payload: { agent: meta.name, intent } });
 
-    const task: Task = { id: taskId, intent, input, payload: { ...payload, previousOutput } };
+    const task: Task = { id: taskId, intent, input, payload: { ...payload, previousOutput, projectContext } };
 
     await log({ action: "agent.started", entity: "Task", entity_id: taskId, payload: { agent: meta.name } });
 
@@ -94,6 +121,14 @@ async function run(intent: string, input: string, payload?: Record<string, unkno
       success = false;
       break;
     }
+
+    // Phase 7 — agent tự nguyện gắn projectRecord vào result muốn Orchestrator
+    // lưu lại vào Project đang mở. Không có project đang mở/không có recorder
+    // đăng ký → bỏ qua im lặng (KHÔNG lỗi, KHÔNG chặn execution).
+    if (result.projectRecord && projectContext && projectRecorder) {
+      await projectRecorder.record(String(projectContext.id), result.projectRecord.category, result.projectRecord.entry);
+    }
+
     previousOutput = result.output;
   }
 
@@ -118,6 +153,8 @@ async function run(intent: string, input: string, payload?: Record<string, unkno
 // nơi DUY NHẤT ghép agent cụ thể rồi gọi register().
 export const TaskOrchestrator = {
   register,
+  setContextProvider,
+  setProjectRecorder,
   listAgents,
   selectAgents,
   run,

@@ -2,6 +2,8 @@ import { TaskOrchestrator } from "../orchestrator";
 import { videoTaskAgent } from "./video-task-agent";
 import { characterTaskAgent } from "./character-task-agent";
 import { imageTaskAgent } from "./image-task-agent";
+import { projectTaskAgent } from "./project-task-agent";
+import { projectContextProvider, projectRecorder } from "./project-integration";
 
 // Agent Registry — composition root DUY NHẤT biết TaskAgent cụ thể nào tồn
 // tại và đăng ký vào Task Orchestrator. orchestrator.ts KHÔNG import file này
@@ -19,3 +21,10 @@ import { imageTaskAgent } from "./image-task-agent";
 TaskOrchestrator.register(videoTaskAgent);
 TaskOrchestrator.register(characterTaskAgent);
 TaskOrchestrator.register(imageTaskAgent);
+TaskOrchestrator.register(projectTaskAgent);
+
+// Phase 7 — đăng ký Project Context/Recorder (2 seam tuỳ chọn của
+// Orchestrator, xem orchestrator.ts). Đây là NƠI DUY NHẤT Orchestrator "biết"
+// Project Agent tồn tại.
+TaskOrchestrator.setContextProvider(projectContextProvider);
+TaskOrchestrator.setProjectRecorder(projectRecorder);

@@ -17,11 +17,17 @@ export type Task = {
   payload?: Record<string, unknown>;
 };
 
+// projectRecord — tuỳ chọn (Phase 7): agent muốn Orchestrator lưu output của
+// nó vào Project đang mở (nếu có) thì set field này, Orchestrator tự gọi
+// ProjectRecorder — KHÔNG agent nào tự import Project Agent. category là tên
+// field trên Project (vd "episodeHistory"/"imageReferences"), entry là dữ liệu
+// tương ứng. Không set → hành vi y hệt trước Phase 7 (không ghi gì).
 export type TaskAgentResult = {
   success: boolean;
   agent: string;
   output?: unknown;
   error?: string;
+  projectRecord?: { category: string; entry: unknown };
 };
 
 export type AgentMetadata = {
@@ -66,3 +72,19 @@ export type OrchestratorResult = {
   finalOutput?: unknown;
   error?: string;
 };
+
+// ContextProvider / ProjectRecorder (Phase 7) — 2 contract tuỳ chọn cho phép
+// Orchestrator tự gắn Project Context vào Task của MỌI agent, và tự ghi kết
+// quả agent lại vào Project đang mở — mà KHÔNG import Project Agent cụ thể
+// (giữ nguyên nguyên tắc IoC: orchestrator.ts chỉ import types.ts). Composition
+// root (agents/registry.ts) đăng ký implementation thật qua
+// setContextProvider()/setProjectRecorder(). Không đăng ký → Orchestrator chạy
+// y hệt trước Phase 7 (payload.projectContext luôn null, không ghi gì) —
+// tương thích ngược hoàn toàn.
+export interface ContextProvider {
+  getContext(): Promise<Record<string, unknown> | null>;
+}
+
+export interface ProjectRecorder {
+  record(projectId: string, category: string, entry: unknown): Promise<void>;
+}

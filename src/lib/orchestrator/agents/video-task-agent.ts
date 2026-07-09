@@ -15,11 +15,16 @@ function canHandle(intent: string): boolean {
 
 async function execute(task: Task): Promise<TaskAgentResult> {
   const plan = await VideoAgent.generate({ prompt: task.input });
+  const success = plan.status !== "failed";
   return {
-    success: plan.status !== "failed",
+    success,
     agent: "video-agent",
     output: plan,
     error: plan.error,
+    // Phase 7 — Orchestrator tự ghi vào episodeHistory của project đang mở
+    // (nếu có), Video Agent/VideoAgent.generate() không cần biết Project Agent
+    // tồn tại.
+    projectRecord: success ? { category: "episodeHistory", entry: { title: plan.title, summary: `Video plan — ${plan.scenes.length} cảnh, ${plan.durationSeconds}s.` } } : undefined,
   };
 }
 

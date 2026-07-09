@@ -14,11 +14,15 @@ function canHandle(intent: string): boolean {
 
 async function execute(task: Task): Promise<TaskAgentResult> {
   const output = await resolveCharacters(task.input);
+  const success = output.characters.length > 0;
   return {
-    success: output.characters.length > 0,
+    success,
     agent: "character-agent",
     output,
-    error: output.characters.length > 0 ? undefined : "no_character_found",
+    error: success ? undefined : "no_character_found",
+    // Phase 7 — Orchestrator tự union vào characterReferences của project
+    // đang mở (nếu có), Character Agent không cần biết Project Agent tồn tại.
+    projectRecord: success ? { category: "characterReferences", entry: output.characters.map((c) => c.character.name) } : undefined,
   };
 }
 

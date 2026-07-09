@@ -15,11 +15,20 @@ function canHandle(intent: string): boolean {
 
 async function execute(task: Task): Promise<TaskAgentResult> {
   const promptPack = await buildPromptPack(task.input);
+  const success = promptPack.characterReferences.length > 0;
   return {
-    success: promptPack.characterReferences.length > 0,
+    success,
     agent: "image-agent",
     output: promptPack,
-    error: promptPack.characterReferences.length > 0 ? undefined : "no_character_found",
+    error: success ? undefined : "no_character_found",
+    // Phase 7 — Orchestrator tự ghi vào imageReferences của project đang mở
+    // (nếu có), Image Agent không cần biết Project Agent tồn tại.
+    projectRecord: success
+      ? {
+          category: "imageReferences",
+          entry: { sceneDescription: promptPack.sceneDescription, characters: promptPack.characterReferences.map((c) => c.name) },
+        }
+      : undefined,
   };
 }
 
