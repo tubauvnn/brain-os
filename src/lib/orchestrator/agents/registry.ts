@@ -3,7 +3,10 @@ import { videoTaskAgent } from "./video-task-agent";
 import { characterTaskAgent } from "./character-task-agent";
 import { imageTaskAgent } from "./image-task-agent";
 import { projectTaskAgent } from "./project-task-agent";
+import { voiceTaskAgent } from "./voice-task-agent";
+import { toolTaskAgent } from "./tool-task-agent";
 import { projectContextProvider, projectRecorder } from "./project-integration";
+import { characterAssetProvider } from "./character-asset-provider";
 
 // Agent Registry — composition root DUY NHẤT biết TaskAgent cụ thể nào tồn
 // tại và đăng ký vào Task Orchestrator. orchestrator.ts KHÔNG import file này
@@ -22,9 +25,12 @@ TaskOrchestrator.register(videoTaskAgent);
 TaskOrchestrator.register(characterTaskAgent);
 TaskOrchestrator.register(imageTaskAgent);
 TaskOrchestrator.register(projectTaskAgent);
+TaskOrchestrator.register(voiceTaskAgent);
+TaskOrchestrator.register(toolTaskAgent);
 
-// Phase 7 — đăng ký Project Context/Recorder (2 seam tuỳ chọn của
-// Orchestrator, xem orchestrator.ts). Đây là NƠI DUY NHẤT Orchestrator "biết"
-// Project Agent tồn tại.
+// Đăng ký Project Context/Recorder + Character Asset Provider (3 seam tuỳ
+// chọn của Orchestrator, xem orchestrator.ts). Đây là NƠI DUY NHẤT Orchestrator
+// "biết" Project Agent/Character Agent tồn tại.
 TaskOrchestrator.setContextProvider(projectContextProvider);
 TaskOrchestrator.setProjectRecorder(projectRecorder);
+TaskOrchestrator.setAssetProvider(characterAssetProvider);

@@ -88,3 +88,27 @@ export interface ContextProvider {
 export interface ProjectRecorder {
   record(projectId: string, category: string, entry: unknown): Promise<void>;
 }
+
+// AssetProvider (Agent Runtime) — seam tuỳ chọn thứ 3, cùng nguyên tắc IoC như
+// ContextProvider/ProjectRecorder: cho phép Orchestrator tự gắn asset
+// reference (vd đường dẫn ảnh canon nhân vật) vào Task của MỌI agent dựa trên
+// intent/input, mà KHÔNG agent nào phải tự import Character Agent (hay bất kỳ
+// nguồn asset nào khác) để tra cứu asset liên quan. Không đăng ký → hành vi y
+// hệt trước khi có seam này (payload.assets luôn null).
+export interface AssetProvider {
+  getAssets(intent: string, input: string): Promise<Record<string, unknown> | null>;
+}
+
+// Execution History — 1 dòng tóm tắt cho mỗi lần TaskOrchestrator.run() chạy
+// xong, giữ in-memory (ring buffer, xem orchestrator.ts) để truy vấn nhanh
+// không cần query lại ActivityLog/Postgres. Đây là lịch sử THỰC THI (khác
+// Activity Log — log chi tiết từng bước, đã có từ Phase 1).
+export type ExecutionHistoryEntry = {
+  taskId: string;
+  intent: string;
+  input: string;
+  success: boolean;
+  agentCount: number;
+  latencyMs: number;
+  startedAt: string;
+};

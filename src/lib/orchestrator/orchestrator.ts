@@ -2,7 +2,9 @@ import { randomUUID } from "crypto";
 import { log } from "@/lib/logger";
 import type {
   AgentMetadata,
+  AssetProvider,
   ContextProvider,
+  ExecutionHistoryEntry,
   ExecutionPlan,
   ExecutionStep,
   OrchestratorResult,
@@ -26,11 +28,16 @@ import type {
 
 const agents: TaskAgent[] = [];
 
-// Phase 7 — 2 seam tuỳ chọn (mặc định null = tắt, hành vi y hệt trước Phase
-// 7). KHÔNG import Project Agent cụ thể ở đây — chỉ giữ contract, implementation
-// thật đăng ký qua setContextProvider()/setProjectRecorder() ở composition root.
+// 3 seam tuỳ chọn (mặc định null = tắt, hành vi y hệt khi chưa đăng ký gì).
+// KHÔNG import agent/provider cụ thể nào ở đây — chỉ giữ contract,
+// implementation thật đăng ký qua setXxx() ở composition root (agents/registry.ts).
 let contextProvider: ContextProvider | null = null;
 let projectRecorder: ProjectRecorder | null = null;
+let assetProvider: AssetProvider | null = null;
+
+const MAX_ATTEMPTS = 2; // 1 lần thử đầu + 1 lần thử lại — CHỈ khi agent.execute() THROW.
+const MAX_HISTORY = 50;
+const executionHistory: ExecutionHistoryEntry[] = [];
 
 function register(agent: TaskAgent): void {
   agents.push(agent);
@@ -44,8 +51,16 @@ function setProjectRecorder(recorder: ProjectRecorder | null): void {
   projectRecorder = recorder;
 }
 
+function setAssetProvider(provider: AssetProvider | null): void {
+  assetProvider = provider;
+}
+
 function listAgents(): AgentMetadata[] {
   return agents.map((a) => a.metadata());
+}
+
+function getExecutionHistory(): ExecutionHistoryEntry[] {
+  return executionHistory;
 }
 
 // Agent Selection — mọi agent có canHandle(intent) === true, theo đúng thứ tự
@@ -64,6 +79,36 @@ function buildPlan(intent: string, selected: TaskAgent[]): ExecutionPlan {
   return { intent, steps };
 }
 
+// Error handling + Retry mechanism (Agent Runtime) — bọc agent.execute() để
+// 1 exception KHÔNG BAO GIỜ làm sập cả run()/API. CHỈ retry khi agent.execute()
+// THROW (lỗi hạ tầng/bất ngờ) — KHÔNG retry khi agent trả về success:false một
+// cách bình thường (đó là thất bại nghiệp vụ xác định — vd "device_not_found",
+// thử lại không đổi kết quả). Lưu ý cho agent thật sau này (Veo/Kling/...): nếu
+// execute() có side effect KHÔNG idempotent, cân nhắc thiết kế lại trước khi
+// dựa vào retry này.
+async function executeWithRetry(agent: TaskAgent, task: Task, taskId: string): Promise<TaskAgentResult> {
+  const agentName = agent.metadata().name;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await agent.execute(task);
+    } catch (e) {
+      lastError = e;
+      const message = e instanceof Error ? e.message : "Lỗi không xác định khi thực thi agent.";
+      await log({
+        action: attempt < MAX_ATTEMPTS ? "agent.retry" : "agent.error",
+        entity: "Task",
+        entity_id: taskId,
+        payload: { agent: agentName, attempt, maxAttempts: MAX_ATTEMPTS, error: message },
+      });
+    }
+  }
+
+  const message = lastError instanceof Error ? lastError.message : "Lỗi không xác định khi thực thi agent.";
+  return { success: false, agent: agentName, error: message };
+}
+
 // Agent Execution — chạy tuần tự (Requirement 1: "execute sequentially").
 // Output của bước trước được đưa vào payload.previousOutput của Task ở bước
 // sau — đây là cơ chế duy nhất cho phép chuỗi nhiều agent hoạt động mà không
@@ -71,18 +116,19 @@ function buildPlan(intent: string, selected: TaskAgent[]): ExecutionPlan {
 // chạy tiếp bước dựa trên output chưa có.
 async function run(intent: string, input: string, payload?: Record<string, unknown>): Promise<OrchestratorResult> {
   const taskId = randomUUID();
+  const startedAt = Date.now();
 
-  // Phase 7 — Project Context (nếu có provider đăng ký + có project đang mở)
-  // lấy 1 lần, gắn vào MỌI Task bên dưới. Đây là cơ chế "agent nhận Project
-  // Context tự động" — agent nào không đọc payload.projectContext thì đơn
-  // giản bỏ qua, không lỗi.
+  // Project Context + Asset Propagation (nếu có provider đăng ký) lấy 1 lần,
+  // gắn vào MỌI Task bên dưới — agent nào không đọc payload.projectContext/
+  // payload.assets thì đơn giản bỏ qua, không lỗi.
   const projectContext = contextProvider ? await contextProvider.getContext() : null;
+  const assets = assetProvider ? await assetProvider.getAssets(intent, input) : null;
 
   await log({
     action: "task.created",
     entity: "Task",
     entity_id: taskId,
-    payload: { intent, input, hasProjectContext: !!projectContext },
+    payload: { intent, input, hasProjectContext: !!projectContext, hasAssets: !!assets },
   });
 
   const selected = selectAgents(intent);
@@ -91,6 +137,16 @@ async function run(intent: string, input: string, payload?: Record<string, unkno
   if (selected.length === 0) {
     const error = `Không tìm thấy agent nào xử lý intent "${intent}".`;
     await log({ action: "task.completed", entity: "Task", entity_id: taskId, payload: { success: false, intent, error } });
+    executionHistory.unshift({
+      taskId,
+      intent,
+      input,
+      success: false,
+      agentCount: 0,
+      latencyMs: Date.now() - startedAt,
+      startedAt: new Date(startedAt).toISOString(),
+    });
+    if (executionHistory.length > MAX_HISTORY) executionHistory.length = MAX_HISTORY;
     return { success: false, intent, plan, outputs: [], error };
   }
 
@@ -103,11 +159,11 @@ async function run(intent: string, input: string, payload?: Record<string, unkno
 
     await log({ action: "agent.selected", entity: "Task", entity_id: taskId, payload: { agent: meta.name, intent } });
 
-    const task: Task = { id: taskId, intent, input, payload: { ...payload, previousOutput, projectContext } };
+    const task: Task = { id: taskId, intent, input, payload: { ...payload, previousOutput, projectContext, assets } };
 
     await log({ action: "agent.started", entity: "Task", entity_id: taskId, payload: { agent: meta.name } });
 
-    const result = await agent.execute(task);
+    const result = await executeWithRetry(agent, task, taskId);
     outputs.push(result);
 
     await log({
@@ -139,6 +195,17 @@ async function run(intent: string, input: string, payload?: Record<string, unkno
     payload: { success, intent, agentCount: outputs.length },
   });
 
+  executionHistory.unshift({
+    taskId,
+    intent,
+    input,
+    success,
+    agentCount: outputs.length,
+    latencyMs: Date.now() - startedAt,
+    startedAt: new Date(startedAt).toISOString(),
+  });
+  if (executionHistory.length > MAX_HISTORY) executionHistory.length = MAX_HISTORY;
+
   return {
     success,
     intent,
@@ -155,7 +222,9 @@ export const TaskOrchestrator = {
   register,
   setContextProvider,
   setProjectRecorder,
+  setAssetProvider,
   listAgents,
+  getExecutionHistory,
   selectAgents,
   run,
 };

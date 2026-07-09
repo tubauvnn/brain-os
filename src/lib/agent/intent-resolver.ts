@@ -8,6 +8,7 @@ export type Intent =
   | "character_request"
   | "image_request"
   | "project_request"
+  | "tool_request"
   | "unknown";
 
 // Intent Resolver — luật xác định (deterministic), KHÔNG gọi model. Chỉ so khớp
@@ -61,6 +62,10 @@ const PROJECT_REQUEST_PHRASES = [
   "list project",
 ];
 
+// tool_request thêm cho Agent Runtime (Generic Tool Agent: calculator/
+// datetime, xem src/lib/tool/). Không đụng phrase nào ở trên.
+const TOOL_REQUEST_PHRASES = ["tính giúp", "tính toán", "mấy giờ", "bây giờ là mấy giờ", "calculate", "what time is it"];
+
 function hasAlpha(text: string): boolean {
   return /[a-zA-ZÀ-ỹ]/.test(text);
 }
@@ -85,5 +90,6 @@ export function resolveIntent(message: string): Intent {
   if (includesAny(text, CHARACTER_REQUEST_PHRASES)) return "character_request";
   if (includesAny(text, VIDEO_REQUEST_PHRASES)) return "video_request";
   if (includesAny(text, VOICE_REQUEST_PHRASES)) return "voice_request";
+  if (includesAny(text, TOOL_REQUEST_PHRASES)) return "tool_request";
   return "chat";
 }

@@ -138,12 +138,17 @@ async function handleRecallMemory(ctx: ExecutionContext): Promise<IntentOutcome>
   return { reply, memoryUsed: memory.items.length, knowledgeUsed: 0, memoryWritten: false };
 }
 
-// intent "voice_request" — CHỈ báo nhận diện, KHÔNG gọi Voice Provider (voice là
-// hạ tầng riêng, xem src/lib/voice/ — wiring vào Agent là bước sau).
-function handleVoiceRequest(): IntentOutcome {
+// intent "voice_request" — giao cho Task Orchestrator (Agent Runtime), cùng
+// nguyên tắc video_request/character_request/image_request/project_request:
+// Conversation Agent KHÔNG tự gọi Voice Provider, chỉ biết Orchestrator.
+// Orchestrator chọn voice-task-agent qua canHandle("voice_request"), agent đó
+// tự gọi VoiceRouter (src/lib/voice/) — cùng provider mà /api/voice/generate
+// dùng, không viết lại logic sinh audio.
+async function handleVoiceRequest(message: string): Promise<IntentOutcome> {
+  const result = await TaskOrchestrator.run("voice_request", message);
+
   return {
-    reply:
-      "Mình nhận ra bạn muốn nghe giọng nói. Khả năng Voice đã có sẵn (Voice Provider, /api/voice/generate) nhưng Conversation Agent chưa gọi tới ở bước này.",
+    reply: JSON.stringify(result, null, 2),
     memoryUsed: 0,
     knowledgeUsed: 0,
     memoryWritten: false,
@@ -243,6 +248,22 @@ async function handleProjectRequest(message: string): Promise<IntentOutcome> {
   };
 }
 
+// intent "tool_request" — giao cho Task Orchestrator, cùng nguyên tắc các
+// handler khác: Conversation Agent KHÔNG tự chạy tool, chỉ biết Orchestrator.
+// Orchestrator chọn tool-task-agent qua canHandle("tool_request") (calculator/
+// datetime, xem src/lib/tool/) — chứng minh TaskAgent tổng quát ra ngoài agent
+// sáng tạo.
+async function handleToolRequest(message: string): Promise<IntentOutcome> {
+  const result = await TaskOrchestrator.run("tool_request", message);
+
+  return {
+    reply: JSON.stringify(result, null, 2),
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+  };
+}
+
 // intent "unknown" — fallback an toàn, không đoán bừa, không gọi model.
 function handleUnknown(): IntentOutcome {
   return {
@@ -260,7 +281,7 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
     case "recall_memory":
       return handleRecallMemory(ctx);
     case "voice_request":
-      return handleVoiceRequest();
+      return handleVoiceRequest(message);
     case "robot_command":
       return handleRobotCommand(message);
     case "video_request":
@@ -271,6 +292,8 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
       return handleImageRequest(message);
     case "project_request":
       return handleProjectRequest(message);
+    case "tool_request":
+      return handleToolRequest(message);
     case "unknown":
       return handleUnknown();
     case "chat":
