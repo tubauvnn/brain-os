@@ -6,6 +6,7 @@ export type Intent =
   | "voice_request"
   | "video_request"
   | "character_request"
+  | "image_request"
   | "unknown";
 
 // Intent Resolver — luật xác định (deterministic), KHÔNG gọi model. Chỉ so khớp
@@ -39,6 +40,11 @@ const VIDEO_REQUEST_PHRASES = ["tạo video", "làm video", "video giới thiệ
 // thiết ra video) — Character Agent chỉ trả dữ liệu nhân vật, không sinh video.
 const CHARACTER_REQUEST_PHRASES = ["tạo tập mới", "tập mới", "nhân vật", "character agent"];
 
+// image_request thêm cho Phase 6 (Image Agent, prompt pack minh hoạ). Xét
+// TRƯỚC character_request vì cụm "vẽ nhân vật"/"tạo ảnh nhân vật" chứa sẵn
+// "nhân vật" — nếu xét character_request trước sẽ nuốt mất các câu vẽ ảnh.
+const IMAGE_REQUEST_PHRASES = ["tạo ảnh", "vẽ ảnh", "tạo hình ảnh", "vẽ nhân vật", "image agent", "generate image", "create an image"];
+
 function hasAlpha(text: string): boolean {
   return /[a-zA-ZÀ-ỹ]/.test(text);
 }
@@ -58,6 +64,7 @@ export function resolveIntent(message: string): Intent {
   if (includesAny(text, REMEMBER_PHRASES)) return "remember";
   if (includesAny(text, RECALL_MEMORY_PHRASES)) return "recall_memory";
   if (isRobotCommand(text)) return "robot_command";
+  if (includesAny(text, IMAGE_REQUEST_PHRASES)) return "image_request";
   if (includesAny(text, CHARACTER_REQUEST_PHRASES)) return "character_request";
   if (includesAny(text, VIDEO_REQUEST_PHRASES)) return "video_request";
   if (includesAny(text, VOICE_REQUEST_PHRASES)) return "voice_request";

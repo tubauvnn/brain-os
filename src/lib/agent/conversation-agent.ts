@@ -211,6 +211,22 @@ async function handleCharacterRequest(message: string): Promise<IntentOutcome> {
   };
 }
 
+// intent "image_request" — giao cho Task Orchestrator, cùng nguyên tắc
+// handleVideoRequest/handleCharacterRequest: Conversation Agent KHÔNG tự gọi
+// Image Agent, chỉ biết Orchestrator. Orchestrator chọn image-task-agent qua
+// canHandle("image_request"); Image Agent tự xin canon từ Character Agent bên
+// trong nó, Orchestrator/Conversation Agent không cần biết chi tiết đó.
+async function handleImageRequest(message: string): Promise<IntentOutcome> {
+  const result = await TaskOrchestrator.run("image_request", message);
+
+  return {
+    reply: JSON.stringify(result, null, 2),
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+  };
+}
+
 // intent "unknown" — fallback an toàn, không đoán bừa, không gọi model.
 function handleUnknown(): IntentOutcome {
   return {
@@ -235,6 +251,8 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
       return handleVideoRequest(message);
     case "character_request":
       return handleCharacterRequest(message);
+    case "image_request":
+      return handleImageRequest(message);
     case "unknown":
       return handleUnknown();
     case "chat":
