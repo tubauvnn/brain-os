@@ -195,6 +195,22 @@ async function handleVideoRequest(message: string): Promise<IntentOutcome> {
   };
 }
 
+// intent "character_request" — giao cho Task Orchestrator, cùng nguyên tắc
+// handleVideoRequest: Conversation Agent KHÔNG tự gọi Character Agent, chỉ
+// biết Orchestrator. Orchestrator chọn character-task-agent qua
+// canHandle("character_request") rồi trả unified result (Character Memory +
+// Consistency Checker output) làm reply.
+async function handleCharacterRequest(message: string): Promise<IntentOutcome> {
+  const result = await TaskOrchestrator.run("character_request", message);
+
+  return {
+    reply: JSON.stringify(result, null, 2),
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+  };
+}
+
 // intent "unknown" — fallback an toàn, không đoán bừa, không gọi model.
 function handleUnknown(): IntentOutcome {
   return {
@@ -217,6 +233,8 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
       return handleRobotCommand(message);
     case "video_request":
       return handleVideoRequest(message);
+    case "character_request":
+      return handleCharacterRequest(message);
     case "unknown":
       return handleUnknown();
     case "chat":

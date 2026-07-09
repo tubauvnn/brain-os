@@ -5,6 +5,7 @@ export type Intent =
   | "robot_command"
   | "voice_request"
   | "video_request"
+  | "character_request"
   | "unknown";
 
 // Intent Resolver — luật xác định (deterministic), KHÔNG gọi model. Chỉ so khớp
@@ -33,6 +34,11 @@ const VOICE_REQUEST_PHRASES = ["nói câu", "đọc câu", "đọc to", "nói to
 // video_request thêm cho Phase 3 (Video Agent, lệnh "tạo video giới thiệu...").
 const VIDEO_REQUEST_PHRASES = ["tạo video", "làm video", "video giới thiệu", "create a video", "make a video"];
 
+// character_request thêm cho Phase 5 (Character Agent, lệnh "tạo tập mới...").
+// Xét TRƯỚC video_request vì "tạo tập mới" là câu tạo nội dung (không nhất
+// thiết ra video) — Character Agent chỉ trả dữ liệu nhân vật, không sinh video.
+const CHARACTER_REQUEST_PHRASES = ["tạo tập mới", "tập mới", "nhân vật", "character agent"];
+
 function hasAlpha(text: string): boolean {
   return /[a-zA-ZÀ-ỹ]/.test(text);
 }
@@ -52,6 +58,7 @@ export function resolveIntent(message: string): Intent {
   if (includesAny(text, REMEMBER_PHRASES)) return "remember";
   if (includesAny(text, RECALL_MEMORY_PHRASES)) return "recall_memory";
   if (isRobotCommand(text)) return "robot_command";
+  if (includesAny(text, CHARACTER_REQUEST_PHRASES)) return "character_request";
   if (includesAny(text, VIDEO_REQUEST_PHRASES)) return "video_request";
   if (includesAny(text, VOICE_REQUEST_PHRASES)) return "voice_request";
   return "chat";

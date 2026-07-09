@@ -1,5 +1,6 @@
 import { TaskOrchestrator } from "../orchestrator";
 import { videoTaskAgent } from "./video-task-agent";
+import { characterTaskAgent } from "./character-task-agent";
 
 // Agent Registry — composition root DUY NHẤT biết TaskAgent cụ thể nào tồn
 // tại và đăng ký vào Task Orchestrator. orchestrator.ts KHÔNG import file này
@@ -15,3 +16,4 @@ import { videoTaskAgent } from "./video-task-agent";
 // KHÔNG sửa orchestrator.ts.
 
 TaskOrchestrator.register(videoTaskAgent);
+TaskOrchestrator.register(characterTaskAgent);
