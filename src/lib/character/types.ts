@@ -9,7 +9,9 @@ export type CharacterRelationship = {
   relation: string;
 };
 
-// Character Model — đầy đủ field theo yêu cầu Phase 5.
+// Character Model — đầy đủ field theo yêu cầu Phase 5. canonImagePath thêm
+// sau (ChinChin Character Canon) — trỏ tới ảnh THẬT là nguồn sự thật ngoại
+// hình, xem canon.ts.
 export type Character = {
   id: string;
   name: string;
@@ -27,13 +29,17 @@ export type Character = {
   history: string;
   visualRules: string[];
   forbiddenChanges: string[];
+  canonImagePath: string;
 };
 
 // Output JSON — kết quả Character Agent trả về cho 1 nhân vật, đúng shape
 // Phase 5 yêu cầu (character/appearance/personality/styleGuide/visualPrompt/
 // voicePrompt/consistencyScore). "character" chỉ là định danh gọn — dữ liệu
 // đầy đủ nằm trong Character Model (characters.ts), không lặp lại ở đây để
-// tránh 2 bản sao lệch nhau.
+// tránh 2 bản sao lệch nhau. canonImagePath/canonImageAvailable/
+// heightChartCanonPath thêm cho ChinChin Character Canon — mọi consumer
+// (Image Agent, provider ảnh thật sau này) tự động nhận được, không cần tự
+// tra cứu riêng.
 export type CharacterOutput = {
   character: { id: string; name: string; universe: string; species: string };
   appearance: string;
@@ -42,6 +48,9 @@ export type CharacterOutput = {
   visualPrompt: string;
   voicePrompt: string;
   consistencyScore: number;
+  canonImagePath: string;
+  canonImageAvailable: boolean;
+  heightChartCanonPath: string;
 };
 
 // Consistency Checker — so khớp override (nếu agent khác yêu cầu nhân vật với
