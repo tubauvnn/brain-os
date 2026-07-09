@@ -5,3 +5,5 @@ node_modules/
 .DS_Store
 *.log
 /uploads/
+# Audio sinh ra bởi Voice Provider (vd ElevenLabs) — file runtime, không phải asset tĩnh.
+/public/generated/

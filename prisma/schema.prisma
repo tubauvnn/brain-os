@@ -240,21 +240,41 @@ model RobotState {
   device          Device    @relation(fields: [device_id], references: [id], onDelete: Cascade)
 }
 
+// ─── CONVERSATION SESSION ────────────────────────────────────────────────────
+// Gom nhóm các lượt chat/voice thuộc cùng 1 phiên (id sinh ở client, lưu
+// localStorage `robot_session_id`) — để robot nhớ ngữ cảnh trong phiên đó.
+model ConversationSession {
+  id         String   @id @default(cuid())
+  title      String?
+  source     String   @default("robot")
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  messages   ConversationMessage[]
+}
+
 // ─── CONVERSATION MESSAGE ────────────────────────────────────────────────────
-// Lịch sử chat giữa user và robot (template reply hoặc Gemini nếu có GEMINI_API_KEY).
+// Lịch sử chat giữa user và robot (OpenAI/CLI agent, xem src/lib/brain/).
 model ConversationMessage {
   id         String   @id @default(cuid())
   role       ChatRole
   content    String
   provider   String?
+  // "voice" | "text" — nguồn của lượt chat (chỉ có ý nghĩa với role=user).
+  source     String?
+  // user: {sttMode, durationMs, confidence, accessLevel}. robot: {robot_say, face, action, latencyMs}.
+  metadata   Json?
   device_id  String?
   project_id String?
+  session_id String?
   created_at DateTime @default(now())
 
-  device     Device?  @relation(fields: [device_id], references: [id], onDelete: Cascade)
-  project    Project? @relation(fields: [project_id], references: [id])
+  device     Device?              @relation(fields: [device_id], references: [id], onDelete: Cascade)
+  project    Project?             @relation(fields: [project_id], references: [id])
+  session    ConversationSession? @relation(fields: [session_id], references: [id], onDelete: SetNull)
 
   @@index([device_id, created_at])
+  @@index([session_id, created_at])
 }
 
 enum ChatRole {

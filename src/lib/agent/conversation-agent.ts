@@ -1,0 +1,260 @@
+import { randomUUID } from "crypto";
+import { log } from "@/lib/logger";
+import { recallMemory, writeMemory } from "@/lib/memory";
+import { recallKnowledge } from "@/lib/knowledge";
+import { ModelRouter, DEFAULT_MODEL_PROVIDER } from "@/lib/model";
+import { resolveIntent, type Intent } from "./intent-resolver";
+import type { ConversationInput, ConversationResult, ExecutionContext } from "./types";
+
+// Conversation Agent — điểm vào DUY NHẤT cho mọi tương tác, dùng chung bởi mọi
+// client tương lai (Web/Robot/Voice/Mobile/API). Agent chỉ ĐIỀU PHỐI, không tự
+// gọi ElevenLabs/OpenAI/Claude (luôn qua src/lib/model/) và không tự query
+// Prisma cho Memory/Knowledge (luôn qua src/lib/memory/, src/lib/knowledge/).
+//
+//     User → Conversation Agent → Intent Resolver → Memory / Knowledge / Model Router → Response
+//
+// KHÔNG multi-agent, KHÔNG planning, KHÔNG workflow — Intent Resolver chỉ chọn
+// ĐÚNG MỘT nhánh xử lý cố định cho mỗi request (switch, không suy luận nhiều
+// bước, không gọi lại chính nó).
+
+type IntentOutcome = {
+  reply?: string;
+  model?: string;
+  memoryUsed: number;
+  knowledgeUsed: number;
+  memoryWritten: boolean;
+  error?: string;
+};
+
+function createExecutionContext(input: ConversationInput): ExecutionContext {
+  return {
+    id: randomUUID(),
+    source: input.source ?? "api",
+    sessionId: input.sessionId,
+    startedAt: Date.now(),
+  };
+}
+
+// intent "chat" — luồng đầy đủ đã có từ vertical slice trước: Memory → Knowledge → Model.
+async function handleChat(ctx: ExecutionContext, message: string): Promise<IntentOutcome> {
+  const memory = await recallMemory();
+  await log({
+    action: "memory.read",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { count: memory.items.length },
+  });
+
+  const knowledge = await recallKnowledge();
+  await log({
+    action: "knowledge.read",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { count: knowledge.items.length, note: knowledge.note },
+  });
+
+  const contextText = [
+    memory.items.length
+      ? `Memory:\n${memory.items.map((m) => `- ${m.title}: ${m.content}`).join("\n")}`
+      : "",
+    knowledge.items.length
+      ? `Knowledge:\n${knowledge.items.map((k) => `- ${k.summary}`).join("\n")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const provider = ModelRouter.resolve(DEFAULT_MODEL_PROVIDER);
+  if (!provider) {
+    return {
+      memoryUsed: memory.items.length,
+      knowledgeUsed: knowledge.items.length,
+      memoryWritten: false,
+      error: `Không tìm thấy model provider "${DEFAULT_MODEL_PROVIDER}".`,
+    };
+  }
+
+  await log({
+    action: "model.selected",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { provider: provider.name },
+  });
+
+  const result = await provider.generate({ message, context: contextText });
+  if (result.status === "error" || !result.reply) {
+    return {
+      memoryUsed: memory.items.length,
+      knowledgeUsed: knowledge.items.length,
+      memoryWritten: false,
+      error: result.error ?? "Sinh phản hồi thất bại.",
+    };
+  }
+
+  return {
+    reply: result.reply,
+    model: result.model,
+    memoryUsed: memory.items.length,
+    knowledgeUsed: knowledge.items.length,
+    memoryWritten: false,
+  };
+}
+
+// intent "remember" — ghi thẳng, không gọi model.
+async function handleRemember(ctx: ExecutionContext, message: string): Promise<IntentOutcome> {
+  const content = message.trim();
+  await writeMemory(content, `conversation-agent:${ctx.source}:${ctx.id}`);
+  await log({
+    action: "memory.write",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { source: ctx.source },
+  });
+
+  return {
+    reply: `Đã ghi nhớ: ${content}`,
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: true,
+  };
+}
+
+// intent "recall_memory" — đọc thẳng, không gọi model.
+async function handleRecallMemory(ctx: ExecutionContext): Promise<IntentOutcome> {
+  const memory = await recallMemory();
+  await log({
+    action: "memory.read",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { count: memory.items.length },
+  });
+
+  const reply = memory.items.length
+    ? `Đây là những gì mình nhớ:\n${memory.items.map((m) => `- ${m.title}: ${m.content}`).join("\n")}`
+    : "Mình chưa có memory nào liên quan để nhớ lại.";
+
+  return { reply, memoryUsed: memory.items.length, knowledgeUsed: 0, memoryWritten: false };
+}
+
+// intent "voice_request" — CHỈ báo nhận diện, KHÔNG gọi Voice Provider (voice là
+// hạ tầng riêng, xem src/lib/voice/ — wiring vào Agent là bước sau).
+function handleVoiceRequest(): IntentOutcome {
+  return {
+    reply:
+      "Mình nhận ra bạn muốn nghe giọng nói. Khả năng Voice đã có sẵn (Voice Provider, /api/voice/generate) nhưng Conversation Agent chưa gọi tới ở bước này.",
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+  };
+}
+
+// intent "robot_command" — CHỈ báo nhận diện, KHÔNG thực thi lệnh robot.
+function handleRobotCommand(): IntentOutcome {
+  return {
+    reply: "Mình nhận diện đây là một lệnh robot, nhưng Conversation Agent chưa thực thi lệnh robot ở bước này.",
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+  };
+}
+
+// intent "unknown" — fallback an toàn, không đoán bừa, không gọi model.
+function handleUnknown(): IntentOutcome {
+  return {
+    reply: "Mình chưa hiểu rõ ý bạn, bạn có thể nói lại rõ hơn không?",
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+  };
+}
+
+async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: string): Promise<IntentOutcome> {
+  switch (intent) {
+    case "remember":
+      return handleRemember(ctx, message);
+    case "recall_memory":
+      return handleRecallMemory(ctx);
+    case "voice_request":
+      return handleVoiceRequest();
+    case "robot_command":
+      return handleRobotCommand();
+    case "unknown":
+      return handleUnknown();
+    case "chat":
+    default:
+      return handleChat(ctx, message);
+  }
+}
+
+export async function runConversationAgent(input: ConversationInput): Promise<ConversationResult> {
+  const ctx = createExecutionContext(input);
+
+  await log({
+    action: "conversation.received",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { source: ctx.source, sessionId: ctx.sessionId ?? null, messageLength: input.message.length },
+  });
+
+  const intent = resolveIntent(input.message);
+  await log({
+    action: "intent.resolved",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { intent },
+  });
+
+  const outcome = await routeByIntent(ctx, intent, input.message);
+  const latencyMs = Date.now() - ctx.startedAt;
+
+  if (outcome.error || !outcome.reply) {
+    await log({
+      action: "conversation.failed",
+      entity: "ExecutionContext",
+      entity_id: ctx.id,
+      payload: { intent, error: outcome.error, latencyMs },
+    });
+    return {
+      success: false,
+      contextId: ctx.id,
+      intent,
+      memoryUsed: outcome.memoryUsed,
+      knowledgeUsed: outcome.knowledgeUsed,
+      memoryWritten: outcome.memoryWritten,
+      latencyMs,
+      error: outcome.error ?? "Xử lý thất bại.",
+    };
+  }
+
+  await log({
+    action: "response.produced",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { intent, model: outcome.model, replyLength: outcome.reply.length },
+  });
+
+  await log({
+    action: "conversation.completed",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: {
+      intent,
+      latencyMs,
+      memoryUsed: outcome.memoryUsed,
+      knowledgeUsed: outcome.knowledgeUsed,
+      memoryWritten: outcome.memoryWritten,
+    },
+  });
+
+  return {
+    success: true,
+    contextId: ctx.id,
+    intent,
+    reply: outcome.reply,
+    model: outcome.model,
+    memoryUsed: outcome.memoryUsed,
+    knowledgeUsed: outcome.knowledgeUsed,
+    memoryWritten: outcome.memoryWritten,
+    latencyMs,
+  };
+}
