@@ -14,3 +14,15 @@ export type {
   VideoGenerationResult,
   VideoGeneratorProvider,
 } from "./types";
+
+// Phase 5 — provider-neutral image-to-video (separate, richer contract from
+// the Phase 3 VideoGeneratorProvider above; see provider-types.ts for why).
+export { VideoProviderRegistry } from "./video-provider-registry";
+export type {
+  VideoProvider,
+  VideoJob,
+  VideoJobStatus,
+  CreateVideoInput,
+  CostEstimateResult,
+  HealthCheckResult,
+} from "./provider-types";

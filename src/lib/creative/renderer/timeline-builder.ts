@@ -39,7 +39,7 @@ async function build(input: TimelineBuildInput): Promise<Timeline> {
     const voiceSpanSeconds = synthesized.length > 0 ? lineOffset - cumulativeOffset - LINE_GAP_SECONDS + SCENE_PADDING_SECONDS : 0;
     const sceneDuration = Math.max(voiceSpanSeconds, scene.estimatedDurationSeconds);
 
-    clips.push({ sceneId: scene.id, index: scene.index, imagePath: scene.imagePath, startSeconds: cumulativeOffset, durationSeconds: sceneDuration });
+    clips.push({ sceneId: scene.id, index: scene.index, imagePath: scene.imagePath, startSeconds: cumulativeOffset, durationSeconds: sceneDuration, prompt: scene.prompt });
 
     cumulativeOffset += sceneDuration;
     globalLineIndex += lineInputs.length;

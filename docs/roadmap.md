@@ -16,7 +16,7 @@ OS/Learning OS/Ecosystem — each of those shifted down by one (old Phase 5→6,
 - ✅ **Phase 2 — Device Layer** — Complete
 - ✅ **Phase 3 — Agent Runtime** — Complete
 - ✅ **Phase 4 — Creative Studio** — Complete
-- ⬜ Phase 5 — Creative Studio: Image-to-Video Provider Integration — Pending
+- 🟡 **Phase 5 — Creative Studio: Image-to-Video Provider Integration** — Architecture complete, AI motion unproven (no provider key)
 - ⬜ Phase 6 — Robot OS — Pending
 - ⬜ Phase 7 — Automation OS — Pending
 - ⬜ Phase 8 — Learning OS — Pending
@@ -165,17 +165,55 @@ is reached via direct REST APIs only, to avoid any risk of colliding with
 Phase 3's intent-resolver phrase priorities; wiring it into the Orchestrator
 as a `TaskAgent` is a natural, low-risk follow-up.
 
-## Phase 5 — Creative Studio: Image-to-Video Provider Integration (pending)
+## Phase 5 — Creative Studio: Image-to-Video Provider Integration 🟡 (architecture complete, AI motion unproven)
 
-Not started. Replace/extend the Episode Renderer's ffmpeg-only pan/zoom
-`MediaComposer` path with a real AI image-to-video provider (Veo, Kling, Wan,
-fal.ai, or similar) behind a provider-neutral contract, same IoC pattern as
-every other provider in this codebase (`ImageRouter`/`VoiceRouter`/
-`ModelRouter`) — swapping in real generated motion without the Orchestrator,
-Story Agent, Scene Planner, Prompt Builder, Asset Manager, Render Queue, Cost
-Manager, or Project Memory changing. `docs/research/OPENMONTAGE_AUDIT.md`'s
-provider-registry findings (§12, rated "C — Brain OS already has this
-pattern") apply directly here.
+**Honest status — not the same bar Phase 4 hit.** The `VideoProvider`
+contract (`src/lib/video/provider-types.ts`) and its registry/selection
+mechanism are real, built, and verified. The first adapter
+(`OpenMontageAdapter`, `providers/openmontage.ts`) genuinely runs OpenMontage
+(`github.com/calesthio/OpenMontage`, AGPLv3, see `docs/research/
+OPENMONTAGE_AUDIT.md` and `docs/VIDEO_PROVIDER.md`) via a real Python venv +
+bridge script and correctly, honestly reports whether real AI-generated
+motion is available. **It is not, in this deployment**: OpenMontage has no
+video-generation model of its own — every one of the 19 downstream providers
+it discovered (Kling/Veo/Runway/Wan/MiniMax/HeyGen/Higgsfield/Sora/...)
+requires its own API key, none of which are configured, and this VPS has no
+GPU for a local model. This project's standing "no mock provider" rule means
+`createVideo()` fails with a clear, real reason rather than fabricating a
+clip — verified for real via the bridge's `health`/`estimate`/`create`
+subcommands.
+
+**Architecture, per explicit direction — OpenMontage is one adapter, not the
+center:**
+
+```
+VideoProvider (Brain OS contract)
+        |-- OpenMontageAdapter -> whichever downstream provider OpenMontage has configured
+        |-- LocalPanZoomVideoProvider -> local ffmpeg pan/zoom (always available, no AI motion)
+        '-- (future) direct providers (Veo/Kling/Wan/fal.ai/MiniMax's own REST APIs)
+```
+
+`video-provider-registry.ts` selects the first healthy provider from an
+ordered list — no OpenMontage-specific branch anywhere in the orchestration
+code (`scene-video-provider.ts`). Right now that's always
+`LocalPanZoomVideoProvider` (wraps the Episode Renderer Core's existing
+ffmpeg pan/zoom, extracted into a shared function, zero regression to
+Phase 4). Adding Veo/Kling/Wan/fal.ai/MiniMax — as a direct provider, or by
+configuring a downstream key inside OpenMontage — is 1 file + 1 registry
+line each; nothing else changes.
+
+**Verified for real:** `data/projects/chinchin/episodes/<test>/final.mp4`
+rendered end-to-end through the new provider-selection path (confirmed via
+logs that `VideoProviderRegistry` genuinely queried `OpenMontageAdapter`,
+got a real "unavailable" from the real Python bridge, and selected
+`LocalPanZoomVideoProvider`) — valid MP4, correct resolution/duration, real
+ElevenLabs voice, burned-in Vietnamese subtitles. No Phase 1-4 regression.
+
+**Remaining work before real AI motion:** supply a downstream provider
+credential (`FAL_KEY` is the cheapest single entry point, unlocking Veo/
+Kling/MiniMax/Recraft) in `/root/vendor/OpenMontage/.env`, or implement a
+direct provider calling a vendor's REST API without OpenMontage. Either one
+slots into the existing registry with no orchestration changes.
 
 ## Phase 6 — Robot OS (pending)
 

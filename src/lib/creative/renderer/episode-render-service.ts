@@ -4,6 +4,7 @@ import { log } from "@/lib/logger";
 import { getAudioMixer, getMediaComposer, getSubtitleRenderer, getTimelineBuilder, getVideoExporter } from "./registry";
 import { resolveEpisodeRenderPaths, cleanupWorkDir } from "./storage";
 import { buildExportPreset } from "./export-presets";
+import { buildProviderClips } from "./scene-video-provider";
 import type { Timeline, TimelineSceneInput } from "./types";
 
 // Episode Render Service — orchestrates the 5 renderer contracts into one
@@ -127,6 +128,7 @@ export async function renderEpisode(input: RenderEpisodeInput): Promise<RenderEp
         imagePath: path.join(process.cwd(), latestAsset.path),
         estimatedDurationSeconds: scene.duration_seconds,
         dialogue,
+        prompt: scene.image_prompt ?? scene.description,
       };
     });
 
@@ -139,7 +141,14 @@ export async function renderEpisode(input: RenderEpisodeInput): Promise<RenderEp
     });
     await setProgress(job.id, 40);
 
-    const visual = await getMediaComposer().compose(timeline, paths.workDir);
+    // Phase 5 — per scene, ask VideoProvider (OpenMontage adapter or local
+    // pan/zoom, selected uniformly, see scene-video-provider.ts) for a real
+    // clip. Scenes without an entry fall back to MediaComposer's own
+    // internal pan/zoom render (unchanged) — never blocks the episode.
+    const providerClips = await buildProviderClips(timeline.clips, paths.workDir);
+    await setProgress(job.id, 50);
+
+    const visual = await getMediaComposer().compose(timeline, paths.workDir, providerClips);
     await setProgress(job.id, 60);
 
     const audio = await getAudioMixer().mix(timeline, paths.workDir, null);

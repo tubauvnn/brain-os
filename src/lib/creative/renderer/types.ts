@@ -30,6 +30,10 @@ export type TimelineClip = {
   imagePath: string;
   startSeconds: number;
   durationSeconds: number;
+  // Phase 5, additive — the scene's image prompt (Prompt Builder output),
+  // passed to a VideoProvider (src/lib/video/) as the motion-generation
+  // prompt when a real image-to-video provider is available.
+  prompt: string;
 };
 
 // Timeline — raw/pre-crossfade cumulative offsets (clips concatenated with
@@ -65,6 +69,8 @@ export type TimelineSceneInput = {
   imagePath: string;
   estimatedDurationSeconds: number;
   dialogue: Array<{ character: string; line: string }>;
+  // Phase 5, additive — Prompt Builder's image_prompt for this scene.
+  prompt: string;
 };
 
 export type TimelineBuildInput = {
@@ -85,7 +91,13 @@ export interface TimelineBuilder {
 export type MediaComposeResult = { videoPath: string; durationSeconds: number };
 export interface MediaComposer {
   readonly name: string;
-  compose(timeline: Timeline, workDir: string): Promise<MediaComposeResult>;
+  // precomposedClips (Phase 5, additive/optional) — sceneId -> clip path
+  // already rendered by a VideoProvider (src/lib/video/provider-types.ts;
+  // e.g. real AI-generated motion, or the local pan/zoom provider). When a
+  // scene has an entry, compose() uses it directly instead of rendering its
+  // own internal pan/zoom clip for that scene. Omitted/scene missing an
+  // entry -> identical behavior to before Phase 5 (this param didn't exist).
+  compose(timeline: Timeline, workDir: string, precomposedClips?: Record<string, string>): Promise<MediaComposeResult>;
 }
 
 export type AudioMixResult = { audioPath: string; durationSeconds: number };
