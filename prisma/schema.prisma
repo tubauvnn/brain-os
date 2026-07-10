@@ -381,8 +381,9 @@ model StoryEpisode {
   created_at       DateTime           @default(now())
   updated_at       DateTime           @updatedAt
 
-  scenes           StoryScene[]
-  cost_estimates   CostEstimate[]
+  scenes              StoryScene[]
+  cost_estimates      CostEstimate[]
+  episode_render_jobs EpisodeRenderJob[]
 
   @@index([project_id, created_at])
 }
@@ -498,4 +499,38 @@ model CostEstimate {
   episode         StoryEpisode @relation(fields: [episode_id], references: [id], onDelete: Cascade)
 
   @@index([episode_id, created_at])
+}
+
+// ─── EPISODE RENDER JOB (OpenMontage-informed renderer) ──────────────────────
+// Episode-level (spans ALL scenes) — deliberately NOT reusing RenderJob
+// (Phase 4, scene-scoped, scene_id required) since that would mean loosening
+// an existing required field on a completed-phase model. This is a separate,
+// purely additive model. See src/lib/creative/renderer/.
+model EpisodeRenderJob {
+  id               String              @id @default(cuid())
+  episode_id       String
+  project_id       String?
+  format           String
+  resolution       String
+  fps              Int
+  status           EpisodeRenderStatus @default(queued)
+  progress         Int                 @default(0)
+  output_path      String?
+  duration_seconds Float?
+  cost_usd         Float?
+  error            String?
+  started_at       DateTime?
+  finished_at      DateTime?
+  created_at       DateTime            @default(now())
+
+  episode          StoryEpisode @relation(fields: [episode_id], references: [id], onDelete: Cascade)
+
+  @@index([episode_id, created_at])
+}
+
+enum EpisodeRenderStatus {
+  queued
+  rendering
+  completed
+  failed
 }

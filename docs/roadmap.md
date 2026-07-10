@@ -4,16 +4,23 @@ This is the authoritative roadmap. Earlier "Phase 5/6/7" naming used during
 incremental development has been retired — everything built after the
 original Phase 2 (Device Layer) is consolidated into Phase 3 (Agent Runtime).
 
+**2026-07-10 renumbering:** after the Episode Renderer landed (Phase 4, local
+FFmpeg only — no AI video-generation provider), Image-to-Video Provider
+Integration was inserted as the new Phase 5, ahead of Robot OS/Automation
+OS/Learning OS/Ecosystem — each of those shifted down by one (old Phase 5→6,
+6→7, 7→8, 8→9). No scope was dropped, only reordered.
+
 ## Status
 
 - ✅ **Phase 1 — Brain Core** — Complete
 - ✅ **Phase 2 — Device Layer** — Complete
 - ✅ **Phase 3 — Agent Runtime** — Complete
-- ✅ **Phase 4 — Creative Studio** — Core complete (Video Provider deferred)
-- ⬜ Phase 5 — Robot OS — Pending
-- ⬜ Phase 6 — Automation OS — Pending
-- ⬜ Phase 7 — Learning OS — Pending
-- ⬜ Phase 8 — Ecosystem — Pending
+- ✅ **Phase 4 — Creative Studio** — Complete
+- ⬜ Phase 5 — Creative Studio: Image-to-Video Provider Integration — Pending
+- ⬜ Phase 6 — Robot OS — Pending
+- ⬜ Phase 7 — Automation OS — Pending
+- ⬜ Phase 8 — Learning OS — Pending
+- ⬜ Phase 9 — Ecosystem — Pending
 
 ## Phase 1 — Brain Core ✅
 
@@ -74,7 +81,7 @@ All three IoC seams (`ContextProvider`, `ProjectRecorder`, `AssetProvider`)
 default to no-ops when unregistered — the Orchestrator's core file never
 imports a single concrete agent or provider.
 
-## Phase 4 — Creative Studio ✅ (core)
+## Phase 4 — Creative Studio ✅
 
 A real, persistent, cost-aware episode-production pipeline
 (`src/lib/creative/`, `src/app/api/creative/**`) sitting alongside Phase 3's
@@ -133,27 +140,57 @@ again, computed a cost estimate, and confirmed Project Memory aggregated the
 location/props/assets. Phase 3's `image_request`/`video_request` chat intents
 were re-verified unchanged.
 
-**Deferred on purpose (stop point):** no Video Provider — episodes end at
-"scene images ready," matching the instruction to build Creative Studio's
-core and stop before video rendering. No chat/Orchestrator intent wiring
-either — Creative Studio is reached via direct REST APIs only, to avoid any
-risk of colliding with Phase 3's intent-resolver phrase priorities; wiring it
-into the Orchestrator as a `TaskAgent` is a natural, low-risk follow-up.
+### Episode Renderer (added 2026-07-10)
 
-## Phase 5 — Robot OS (pending)
+Closes Phase 4 out completely: `src/lib/creative/renderer/` turns a
+story-with-rendered-scene-images into an actual final MP4, locally, via
+FFmpeg — five provider-neutral contracts (`TimelineBuilder`, `MediaComposer`,
+`AudioMixer`, `SubtitleRenderer`, `VideoExporter`), `POST /api/creative/
+episode/render`, and a new additive `EpisodeRenderJob` model. Per-line voice
+synthesis reuses the existing ElevenLabs Voice Provider + Character Agent
+(unmodified); visuals use standard `zoompan`/`xfade` ffmpeg filters (pan/zoom
++ crossfade); subtitles are real Vietnamese SRT burned in via ffmpeg's
+`subtitles` filter. Studied `github.com/calesthio/OpenMontage` (AGPLv3) as
+architecture reference only — see `docs/research/OPENMONTAGE_AUDIT.md`;
+nothing was copied, and its decisive finding (their real compositing power
+lives in Remotion/Chromium, not ffmpeg) confirmed this renderer had to be
+original work. Verified end-to-end with real ChinChin canon, a real rendered
+image, real ElevenLabs voice, and burned-in subtitles →
+`data/projects/chinchin/episodes/openmontage-test/final.mp4`.
+
+**Deferred on purpose:** no AI image-to-video provider — this renderer only
+animates static images (pan/zoom/crossfade), it doesn't generate motion.
+That's Phase 5. No chat/Orchestrator intent wiring either — Creative Studio
+is reached via direct REST APIs only, to avoid any risk of colliding with
+Phase 3's intent-resolver phrase priorities; wiring it into the Orchestrator
+as a `TaskAgent` is a natural, low-risk follow-up.
+
+## Phase 5 — Creative Studio: Image-to-Video Provider Integration (pending)
+
+Not started. Replace/extend the Episode Renderer's ffmpeg-only pan/zoom
+`MediaComposer` path with a real AI image-to-video provider (Veo, Kling, Wan,
+fal.ai, or similar) behind a provider-neutral contract, same IoC pattern as
+every other provider in this codebase (`ImageRouter`/`VoiceRouter`/
+`ModelRouter`) — swapping in real generated motion without the Orchestrator,
+Story Agent, Scene Planner, Prompt Builder, Asset Manager, Render Queue, Cost
+Manager, or Project Memory changing. `docs/research/OPENMONTAGE_AUDIT.md`'s
+provider-registry findings (§12, rated "C — Brain OS already has this
+pattern") apply directly here.
+
+## Phase 6 — Robot OS (pending)
 
 Not started. Expected to connect Device Manager to real hardware (ESP32),
 replacing the Mock Robot Provider with a real provider behind the same
 `DeviceProvider` contract.
 
-## Phase 6 — Automation OS (pending)
+## Phase 7 — Automation OS (pending)
 
 Not started.
 
-## Phase 7 — Learning OS (pending)
+## Phase 8 — Learning OS (pending)
 
 Not started.
 
-## Phase 8 — Ecosystem (pending)
+## Phase 9 — Ecosystem (pending)
 
 Not started.

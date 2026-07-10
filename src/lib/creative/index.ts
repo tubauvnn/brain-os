@@ -10,8 +10,10 @@ export { estimateEpisodeCost, getLatestCostEstimate } from "./cost-manager/cost-
 export { listAssets } from "./asset-manager/asset-manager";
 export { publicUrlForPath } from "./asset-manager/storage";
 export { getProjectCreativeMemory } from "./project-memory/project-memory";
+export { renderEpisode } from "./renderer/episode-render-service";
 
 export type { StoryOutline, StoryDialogueLine, StorySceneSeed, StoryAgentResult } from "./story/types";
 export type { PlannedScene, ScenePlan } from "./scene-planner/types";
 export type { ScenePromptInput, ScenePromptResult } from "./prompt-builder/types";
 export type { ProjectCreativeMemory, ProjectCreativeAssetSummary } from "./project-memory/types";
+export type { RenderEpisodeInput, RenderEpisodeResult } from "./renderer/episode-render-service";
