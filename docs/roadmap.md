@@ -9,7 +9,7 @@ original Phase 2 (Device Layer) is consolidated into Phase 3 (Agent Runtime).
 - ✅ **Phase 1 — Brain Core** — Complete
 - ✅ **Phase 2 — Device Layer** — Complete
 - ✅ **Phase 3 — Agent Runtime** — Complete
-- ⬜ Phase 4 — Creative Studio — Pending
+- ✅ **Phase 4 — Creative Studio** — Core complete (Video Provider deferred)
 - ⬜ Phase 5 — Robot OS — Pending
 - ⬜ Phase 6 — Automation OS — Pending
 - ⬜ Phase 7 — Learning OS — Pending
@@ -74,13 +74,71 @@ All three IoC seams (`ContextProvider`, `ProjectRecorder`, `AssetProvider`)
 default to no-ops when unregistered — the Orchestrator's core file never
 imports a single concrete agent or provider.
 
-## Phase 4 — Creative Studio (pending)
+## Phase 4 — Creative Studio ✅ (core)
 
-Not started. Expected to build on the Agent Runtime's multi-step execution
-plans (e.g. a real Character → Image → Video → Voice chain producing an
-actual rendered asset), and to replace the Video/Image Agents' mock
-generator providers with real rendering backends (Veo/Kling/DALL·E/etc.)
-without changing the Orchestrator or Conversation Agent.
+A real, persistent, cost-aware episode-production pipeline
+(`src/lib/creative/`, `src/app/api/creative/**`) sitting alongside Phase 3's
+Agent Runtime — additive only, no Phase 1-3 file's behavior changed:
+
+- **Story Agent** (`story/story-agent.ts`) — real content, not a template:
+  calls Model Router (`ModelRouter`, Phase 1/3, unmodified) with the
+  Character Agent's canonical cast (`resolveCharacters`, Phase 3, unmodified)
+  injected as context, so generated dialogue never invents characters outside
+  canon. Strict JSON outline (title/logline/theme/scenes/dialogue), parsed
+  defensively (Model Router has no JSON mode) — returns a structured error
+  rather than throwing or guessing on malformed output.
+- **Scene Planner** (`scene-planner/scene-planner.ts`) — pure/deterministic:
+  splits the outline into scenes, clamps/redistributes per-scene duration,
+  and derives required assets (character IDs cross-checked against Character
+  Agent, location, props) per scene.
+- **Prompt Builder** (`prompt-builder/prompt-builder.ts`) — merges four
+  sources into the final image prompt: character canon (reuses
+  `buildPromptPack()` from the Phase 3 Image Agent, unmodified), the active
+  project's style (`getActiveProjectContext()`, Phase 3, unmodified),
+  location continuity (recalled from Project Memory so repeat locations stay
+  visually consistent across scenes), and merged negative prompts.
+- **Image Provider** (`image-provider/`) — real generation, **no mock**:
+  `openai-image.ts` calls OpenAI's Images API (`gpt-image-1`) directly via
+  `fetch`, same raw-REST convention as the Phase 1 Model/Voice providers.
+- **Asset Manager** (`asset-manager/`) — exact-match duplicate detection
+  (sha256 of prompt + negative prompts + characters + location, scoped per
+  project) so a re-rendered scene reuses the existing file instead of paying
+  for and storing a new one; canon-consistency warnings from the Character
+  Agent are recorded on every asset.
+- **Render Queue** (`render-queue/`) — `GeneratedAsset`/`RenderJob` rows in
+  Postgres (new, additive schema). Brain OS has no background worker process
+  today (documented limitation, see `NEXT.md`), so "asynchronous" here means
+  submit (`enqueue`) and execute (`process`) are separate API calls rather
+  than a blocking pipeline — bounded automatic retry plus an explicit manual
+  retry endpoint for jobs that exhausted their attempts.
+- **Cost Manager** (`cost-manager/`) — per-episode image/voice/video/total
+  estimate (env-overridable price constants, documented as estimates — no
+  Voice/Video Provider is actually called to produce these numbers).
+- **Project Memory** (`project-memory/`) — durable, project-scoped record of
+  which locations/props/characters/assets have been generated, read directly
+  from `GeneratedAsset`; the same data Asset Manager uses for reuse and
+  Prompt Builder uses for location continuity.
+
+New Postgres models (`StoryEpisode`, `StoryScene`, `GeneratedAsset`,
+`RenderJob`, `CostEstimate`) reference the Phase 7 JSON project store by a
+plain `project_id` string (no FK) — deliberately, since that "Project" is a
+JSON file store, a different system from the SQL `Project` model.
+
+**Verified end-to-end for real** (not just build-passes): created a story via
+a real OpenAI chat call, built a scene prompt merging canon + location,
+rendered a real image via OpenAI's Images API and saved it to disk, enqueued
+the same scene a second time and confirmed Asset Manager reused the existing
+file (0.2s vs ~43s, `cost_usd: 0`, `reused: true`) instead of calling OpenAI
+again, computed a cost estimate, and confirmed Project Memory aggregated the
+location/props/assets. Phase 3's `image_request`/`video_request` chat intents
+were re-verified unchanged.
+
+**Deferred on purpose (stop point):** no Video Provider — episodes end at
+"scene images ready," matching the instruction to build Creative Studio's
+core and stop before video rendering. No chat/Orchestrator intent wiring
+either — Creative Studio is reached via direct REST APIs only, to avoid any
+risk of colliding with Phase 3's intent-resolver phrase priorities; wiring it
+into the Orchestrator as a `TaskAgent` is a natural, low-risk follow-up.
 
 ## Phase 5 — Robot OS (pending)
 

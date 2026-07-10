@@ -361,3 +361,141 @@ model ActivityLog {
   @@index([entity, entity_id])
   @@index([created_at])
 }
+
+// ─── CREATIVE STUDIO (Phase 4) ───────────────────────────────────────────────
+// src/lib/creative/ — Story Agent → Scene Planner → Prompt Builder → Image
+// Agent (real provider, no mock) → Asset Manager → Render Queue → Cost
+// Manager → Project Memory. project_id ở đây là chuỗi thuần (KHÔNG FK) — trỏ
+// tới id của Project JSON (Phase 7, src/lib/project/store.ts), một hệ lưu trữ
+// hoàn toàn khác với model `Project` (SQL) phía trên; cố tình không FK để
+// không phải sửa model `Project` đã đóng băng.
+
+model StoryEpisode {
+  id               String             @id @default(cuid())
+  project_id       String?
+  title            String
+  logline          String
+  theme            String?
+  duration_seconds Int                @default(0)
+  status           StoryEpisodeStatus @default(draft)
+  created_at       DateTime           @default(now())
+  updated_at       DateTime           @updatedAt
+
+  scenes           StoryScene[]
+  cost_estimates   CostEstimate[]
+
+  @@index([project_id, created_at])
+}
+
+enum StoryEpisodeStatus {
+  draft
+  ready
+}
+
+model StoryScene {
+  id                String      @id @default(cuid())
+  episode_id        String
+  index             Int
+  description       String
+  dialogue          Json?
+  duration_seconds  Int
+  character_ids     String[]    @default([])
+  location_tag      String?
+  prop_tags         String[]    @default([])
+  image_prompt      String?
+  negative_prompts  String[]    @default([])
+  status            SceneStatus @default(planned)
+  created_at        DateTime    @default(now())
+  updated_at        DateTime    @updatedAt
+
+  episode           StoryEpisode     @relation(fields: [episode_id], references: [id], onDelete: Cascade)
+  render_jobs       RenderJob[]
+  assets            GeneratedAsset[]
+
+  @@index([episode_id, index])
+}
+
+enum SceneStatus {
+  planned
+  prompted
+  queued
+  rendering
+  rendered
+  failed
+}
+
+model GeneratedAsset {
+  id               String    @id @default(cuid())
+  type             AssetType @default(image)
+  scene_id         String?
+  project_id       String?
+  prompt           String
+  negative_prompts String[]  @default([])
+  provider         String
+  path             String
+  mime_type        String
+  width            Int?
+  height           Int?
+  cost_usd         Float?
+  content_hash     String
+  character_ids    String[]  @default([])
+  location_tag     String?
+  prop_tags        String[]  @default([])
+  reused           Boolean   @default(false)
+  metadata         Json?
+  created_at       DateTime  @default(now())
+
+  scene            StoryScene? @relation(fields: [scene_id], references: [id], onDelete: SetNull)
+
+  @@index([content_hash])
+  @@index([project_id, location_tag])
+}
+
+enum AssetType {
+  image
+}
+
+model RenderJob {
+  id              String          @id @default(cuid())
+  scene_id        String
+  kind            RenderJobKind   @default(image)
+  status          RenderJobStatus @default(queued)
+  attempts        Int             @default(0)
+  max_attempts    Int             @default(3)
+  error           String?
+  result_asset_id String?
+  queued_at       DateTime        @default(now())
+  started_at      DateTime?
+  finished_at     DateTime?
+
+  scene           StoryScene @relation(fields: [scene_id], references: [id], onDelete: Cascade)
+
+  @@index([status, queued_at])
+}
+
+enum RenderJobKind {
+  image
+}
+
+enum RenderJobStatus {
+  queued
+  running
+  completed
+  failed
+  retrying
+}
+
+model CostEstimate {
+  id              String   @id @default(cuid())
+  episode_id      String
+  image_cost_usd  Float    @default(0)
+  voice_cost_usd  Float    @default(0)
+  video_cost_usd  Float    @default(0)
+  total_usd       Float    @default(0)
+  breakdown       Json?
+  created_at      DateTime @default(now())
+
+  episode         StoryEpisode @relation(fields: [episode_id], references: [id], onDelete: Cascade)
+
+  @@index([episode_id, created_at])
+}
