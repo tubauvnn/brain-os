@@ -4,13 +4,26 @@ import { prisma } from "@/lib/prisma";
 import { handleError } from "@/lib/api";
 import { log } from "@/lib/logger";
 import { getRobotDevice } from "@/lib/robot";
-import { askCliAgents } from "@/lib/brain/cli-agent-router";
-import { SYSTEM_CONTEXT } from "@/lib/brain/system-context";
-import { ensureSession, loadSessionHistoryText, countSessionMessages } from "@/lib/brain/session-context";
+import { ensureSession, countSessionMessages } from "@/lib/brain/session-context";
 import { toJsonValue } from "@/lib/json";
-import { matchLocalSkill } from "@/lib/robot-ai/local-skills";
-import { askRobotOpenAI } from "@/lib/robot-ai/openai-provider";
-import type { RobotAction, RobotChatResult, RobotMood, RobotMouth } from "@/lib/robot-ai/types";
+import { runConversationAgent } from "@/lib/agent/conversation-agent";
+import { checkLanguageGuard } from "@/lib/robot-ai/language-guard";
+import { deriveRobotPresentation, type RobotPresentation } from "@/lib/robot-ai/presentation";
+import type { RobotChatResult, RobotProvider } from "@/lib/robot-ai/types";
+
+// Phase 6A — /robot không còn tự trả lời qua local-skills.ts/demo-scenarios.ts
+// (kịch bản gõ sẵn) hay openai-provider.ts (gọi thẳng OpenAI, bỏ qua Memory/
+// Knowledge/Project Context). Route này giờ CHỈ là 1 client mỏng của Brain OS:
+//
+//   Robot UI → route này → Conversation Agent → Intent Resolver →
+//   (Memory/Knowledge/Project Context cho chat, hoặc Task Orchestrator →
+//   Robot Agent → Device Manager cho lệnh robot) → ConversationResult
+//
+// Route CHỈ làm: validate input, chặn rác STT (language guard, không phải nội
+// dung bịa), gọi Conversation Agent, dịch ConversationResult sang
+// mood/action/eyes/mouth cho UI (deriveRobotPresentation — thuần presentation,
+// không tạo nội dung trả lời), và lưu lịch sử hội thoại (ConversationMessage,
+// dùng lại bởi chính Conversation Agent cho lượt hỏi tiếp theo trong cùng session).
 
 const ChatSchema = z.object({
   message: z.string().min(1).max(2000).optional(),
@@ -21,10 +34,6 @@ const ChatSchema = z.object({
   deviceId: z.string().optional(),
   access_level: z.number().int().min(0).max(4).optional(),
   accessLevel: z.number().int().min(0).max(4).optional(),
-  // true = dùng CLI agent router (Codex/Claude/Gemini CLI, chậm hơn) thay vì
-  // OpenAI API (nhanh, mặc định) — xem phiên 18 trong STATE.md.
-  deep: z.boolean().optional(),
-  // Phiên 21: session để robot nhớ ngữ cảnh trong cùng 1 cuộc hội thoại + debug info.
   sessionId: z.string().min(1).max(200).optional(),
   source: z.enum(["voice", "text"]).optional(),
   sttMode: z.enum(["browser", "openai"]).optional(),
@@ -35,76 +44,14 @@ const ChatSchema = z.object({
 
 const DEFAULT_ROBOT_DEVICE_ID = "dev-robot-simulator";
 const DEFAULT_ACCESS_LEVEL = 3;
-const MAX_TOTAL_CONTEXT_CHARS = 8000;
-// "history tối đa 6 lượt" cho prompt OpenAI ~ 6 cặp user/robot = 12 dòng.
-const OPENAI_HISTORY_LIMIT = 12;
 
-const FALLBACK_TEXT = "Chuối chưa kết nối được não AI, nhưng phần điều khiển robot vẫn chạy.";
+const FALLBACK_TEXT = "Chuối chưa kết nối được não Brain OS, bạn thử lại giúp mình nhé.";
 
-function combineContext(base: string, history: string): string {
-  const combined = history ? `${base}\n\nLịch sử hội thoại gần đây (session hiện tại):\n${history}` : base;
-  if (combined.length <= MAX_TOTAL_CONTEXT_CHARS) return combined;
-  return `${combined.slice(0, MAX_TOTAL_CONTEXT_CHARS)}\n...(context bị cắt bớt, vượt giới hạn ${MAX_TOTAL_CONTEXT_CHARS} ký tự)`;
-}
-
-// CLI agent router (chế độ deep=true) vẫn chạy trên schema cũ (face/action, xem
-// src/lib/brain/reply-schema.ts) — quy đổi best-effort sang mood/action/eyes/mouth
-// mới để response luôn theo đúng 1 schema, không phá tính năng deep mode cũ.
-const LEGACY_FACE_TO_MOOD: Record<string, RobotMood> = {
-  idle: "idle",
-  happy: "happy",
-  thinking: "thinking",
-  sad: "error",
-};
-const LEGACY_FACE_TO_MOUTH: Record<string, RobotMouth> = {
-  idle: "idle",
-  happy: "smile",
-  thinking: "thinking",
-  sad: "idle",
-};
-const LEGACY_ACTION_TO_ROBOT_ACTION: Record<string, RobotAction> = {
-  none: "none",
-  wave: "greet",
-  nod: "smile",
-};
-
-type ResolvedReply = Omit<RobotChatResult, "ok">;
-
-async function resolveReply(userText: string, context: string, deep: boolean): Promise<ResolvedReply> {
-  const localMatch = matchLocalSkill(userText);
-  if (localMatch) {
-    const { ok: _ok, ...rest } = localMatch;
-    return rest;
-  }
-
-  if (deep) {
-    const cli = await askCliAgents(userText, context);
-    return {
-      provider: cli.provider,
-      reply: cli.reply,
-      mood: LEGACY_FACE_TO_MOOD[cli.face] ?? "idle",
-      action: LEGACY_ACTION_TO_ROBOT_ACTION[cli.action] ?? "none",
-      eyes: "center",
-      mouth: LEGACY_FACE_TO_MOUTH[cli.face] ?? "idle",
-      error: cli.errors.length > 0 ? cli.errors.join(" | ").slice(0, 500) : undefined,
-    };
-  }
-
-  try {
-    const openaiResult = await askRobotOpenAI(userText, context);
-    return { ...openaiResult, provider: "openai" };
-  } catch (e) {
-    const message = e instanceof Error ? e.message : "Lỗi không xác định khi gọi OpenAI";
-    return {
-      provider: "fallback",
-      reply: FALLBACK_TEXT,
-      mood: "error",
-      action: "none",
-      eyes: "center",
-      mouth: "idle",
-      error: message,
-    };
-  }
+// intent thật (chat/remember/recall_memory/robot_command/...) → RobotProvider
+// hiển thị debug. Không có "openai" cứng cho mọi câu — chỉ chat/recall dùng
+// Model Router (hiện là "openai"), robot_command/remember không gọi model.
+function resolveProviderLabel(usedModel: boolean): RobotProvider {
+  return usedModel ? "openai" : "local";
 }
 
 export async function POST(req: NextRequest) {
@@ -126,28 +73,18 @@ export async function POST(req: NextRequest) {
     }
 
     const deviceId = body.deviceId ?? body.device_id ?? DEFAULT_ROBOT_DEVICE_ID;
-    // accessLevel giữ lại trong schema để tương thích API / auth thật sau này —
-    // context gửi cho AI hiện là SYSTEM_CONTEXT (+ lịch sử session), chưa lọc theo access_level.
     const accessLevel = body.accessLevel ?? body.access_level ?? DEFAULT_ACCESS_LEVEL;
     const source = body.source ?? "text";
 
-    // Session là best-effort: id do client tự sinh (localStorage `robot_session_id`),
-    // phải upsert trước khi dùng làm khoá ngoại cho ConversationMessage. Nếu tạo
-    // thất bại (DB lỗi), coi như không có session — chat vẫn hoạt động bình thường,
-    // chỉ mất phần nhớ ngữ cảnh + lưu lịch sử theo phiên.
+    // Session best-effort: id do client tự sinh (localStorage), upsert trước
+    // khi Conversation Agent dùng nó để load lịch sử (xem handleChat trong
+    // conversation-agent.ts) và trước khi ConversationMessage dùng làm khoá ngoại.
     let sessionId: string | null = null;
-    let historyText = "";
     if (body.sessionId) {
       const ok = await ensureSession(body.sessionId);
-      if (ok) {
-        sessionId = body.sessionId;
-        historyText = await loadSessionHistoryText(sessionId, OPENAI_HISTORY_LIMIT);
-      }
+      if (ok) sessionId = body.sessionId;
     }
 
-    // DB (device) là best-effort — nếu lookup lỗi, vẫn lưu message được (chỉ
-    // thiếu device_id), miễn Postgres còn sống. Không còn gate việc lưu theo
-    // "phải có device" như trước, vì giờ session_id là khoá chính cho ngữ cảnh.
     let device: Awaited<ReturnType<typeof getRobotDevice>> | null = null;
     try {
       device = await getRobotDevice(deviceId);
@@ -155,11 +92,31 @@ export async function POST(req: NextRequest) {
       device = null;
     }
 
-    // provider trên message user ghi rõ nguồn nhận dạng: "manual" (gõ tay),
-    // "openai_transcribe"/"browser_stt" (voice, ưu tiên sttProvider client gửi
-    // — cụ thể hơn — rồi mới suy từ sttMode nếu thiếu).
     const userProvider =
       source === "voice" ? body.sttProvider || (body.sttMode === "browser" ? "browser_stt" : "openai_transcribe") : "manual";
+
+    const startedAt = Date.now();
+
+    // Language guard chạy TRƯỚC Conversation Agent — chặn rác STT (script lạ)
+    // trước khi tốn round-trip Memory/Model, không phải nội dung trả lời bịa.
+    const guarded = checkLanguageGuard(userText);
+    const agentResult = guarded ? null : await runConversationAgent({ message: userText, source: "robot", sessionId: sessionId ?? undefined });
+    const latencyMs = Date.now() - startedAt;
+
+    const reply = guarded ? guarded.reply : agentResult?.reply ?? FALLBACK_TEXT;
+    const intent = guarded ? "unknown" : agentResult?.intent ?? "unknown";
+    const usedModel = !guarded && !!agentResult?.model;
+    const presentation: RobotPresentation = guarded
+      ? {
+          mood: guarded.mood,
+          action: guarded.action,
+          eyes: guarded.eyes ?? "center",
+          mouth: guarded.mouth ?? "idle",
+          brainNote: "language guard",
+        }
+      : deriveRobotPresentation(intent, agentResult ?? { success: false, error: "Không gọi được Conversation Agent." });
+    const provider: RobotProvider = guarded ? "local" : agentResult?.success ? resolveProviderLabel(usedModel) : "fallback";
+    const errorText = guarded ? undefined : agentResult?.success ? undefined : agentResult?.error ?? "Xử lý thất bại.";
 
     let userMessageId: string | undefined;
     try {
@@ -186,27 +143,23 @@ export async function POST(req: NextRequest) {
       // bỏ qua — không để lỗi lưu lịch sử làm hỏng response chat
     }
 
-    const context = combineContext(SYSTEM_CONTEXT, historyText);
-    const startedAt = Date.now();
-    const result = await resolveReply(userText, context, body.deep === true);
-    const latencyMs = Date.now() - startedAt;
-
     let robotMessageId: string | undefined;
     let createdAt: Date | undefined;
     try {
       const robotMessage = await prisma.conversationMessage.create({
         data: {
           role: "robot",
-          content: result.reply,
-          provider: result.provider,
+          content: reply,
+          provider,
           metadata: toJsonValue({
-            mood: result.mood,
-            action: result.action,
-            eyes: result.eyes,
-            mouth: result.mouth,
-            hardwareCommand: result.hardwareCommand,
-            suggestedNextActions: result.suggestedNextActions,
-            brainNote: result.brainNote,
+            intent,
+            mood: presentation.mood,
+            action: presentation.action,
+            eyes: presentation.eyes,
+            mouth: presentation.mouth,
+            hardwareCommand: presentation.hardwareCommand,
+            suggestedNextActions: presentation.suggestedNextActions,
+            brainNote: presentation.brainNote,
             latencyMs,
           }),
           device_id: device?.id,
@@ -226,7 +179,7 @@ export async function POST(req: NextRequest) {
         entity: "Device",
         entity_id: device.id,
         device_id: device.id,
-        payload: { user_text: userText, deep: body.deep === true, access_level: accessLevel, session_id: sessionId, ...result },
+        payload: { user_text: userText, intent, access_level: accessLevel, session_id: sessionId, provider, reply, error: errorText },
       });
     }
 
@@ -234,23 +187,24 @@ export async function POST(req: NextRequest) {
 
     const response: RobotChatResult & Record<string, unknown> = {
       ok: true,
-      provider: result.provider,
-      model: result.model,
-      reply: result.reply,
-      mood: result.mood,
-      action: result.action,
-      eyes: result.eyes,
-      mouth: result.mouth,
-      hardwareCommand: result.hardwareCommand,
-      suggestedNextActions: result.suggestedNextActions,
-      brainNote: result.brainNote,
-      error: result.error,
+      provider,
+      model: agentResult?.model,
+      reply,
+      mood: presentation.mood,
+      action: presentation.action,
+      eyes: presentation.eyes,
+      mouth: presentation.mouth,
+      hardwareCommand: presentation.hardwareCommand,
+      suggestedNextActions: presentation.suggestedNextActions,
+      brainNote: presentation.brainNote,
+      error: errorText,
       user_message_id: userMessageId,
       robot_message_id: robotMessageId,
       created_at: createdAt,
       session_id: sessionId,
       session_message_count: sessionMessageCount,
       latency_ms: latencyMs,
+      intent,
     };
 
     return NextResponse.json(response);

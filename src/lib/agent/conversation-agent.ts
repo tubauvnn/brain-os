@@ -3,8 +3,9 @@ import { log } from "@/lib/logger";
 import { recallMemory, writeMemory } from "@/lib/memory";
 import { recallKnowledge } from "@/lib/knowledge";
 import { ModelRouter, DEFAULT_MODEL_PROVIDER } from "@/lib/model";
-import { DeviceManager } from "@/lib/device";
 import { TaskOrchestrator } from "@/lib/orchestrator";
+import { getActiveProjectContext } from "@/lib/project";
+import { loadSessionHistoryText } from "@/lib/brain/session-context";
 import { resolveIntent, type Intent } from "./intent-resolver";
 import type { ConversationInput, ConversationResult, ExecutionContext } from "./types";
 
@@ -26,6 +27,7 @@ type IntentOutcome = {
   knowledgeUsed: number;
   memoryWritten: boolean;
   error?: string;
+  meta?: Record<string, unknown>;
 };
 
 function createExecutionContext(input: ConversationInput): ExecutionContext {
@@ -38,6 +40,10 @@ function createExecutionContext(input: ConversationInput): ExecutionContext {
 }
 
 // intent "chat" — luồng đầy đủ đã có từ vertical slice trước: Memory → Knowledge → Model.
+// Phase 6A: thêm Project Context (dự án đang mở, xem src/lib/project/) + lịch
+// sử hội thoại trong cùng session (nếu client gửi sessionId, xem
+// src/lib/brain/session-context.ts) — cần để trả lời được các câu hỏi kiểu
+// "mày nhớ tao đang làm gì không?" bằng ngữ cảnh THẬT, không đoán bừa.
 async function handleChat(ctx: ExecutionContext, message: string): Promise<IntentOutcome> {
   const memory = await recallMemory();
   await log({
@@ -55,13 +61,18 @@ async function handleChat(ctx: ExecutionContext, message: string): Promise<Inten
     payload: { count: knowledge.items.length, note: knowledge.note },
   });
 
+  const projectContext = await getActiveProjectContext();
+  const historyText = ctx.sessionId ? await loadSessionHistoryText(ctx.sessionId) : "";
+
   const contextText = [
+    projectContext ? `Dự án đang mở: ${projectContext.name}${projectContext.storyBible ? `\n${projectContext.storyBible}` : ""}` : "",
     memory.items.length
       ? `Memory:\n${memory.items.map((m) => `- ${m.title}: ${m.content}`).join("\n")}`
       : "",
     knowledge.items.length
       ? `Knowledge:\n${knowledge.items.map((k) => `- ${k.summary}`).join("\n")}`
       : "",
+    historyText ? `Lịch sử hội thoại gần đây (session hiện tại):\n${historyText}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -155,31 +166,27 @@ async function handleVoiceRequest(message: string): Promise<IntentOutcome> {
   };
 }
 
-// intent "robot_command" — dịch message sang 1 Device Command cố định (không
-// suy luận nhiều bước) rồi giao cho Device Manager (src/lib/device/) thực thi.
-// Conversation Agent KHÔNG tự nói chuyện với Mock Robot Device — luôn qua
-// Device Manager, đúng kiến trúc Conversation Agent → Intent Resolver →
-// Device Manager → Device Provider. Lifecycle logging (received/resolved/
-// started/completed|failed) do Device Manager tự làm, không log trùng ở đây.
-const ROBOT_STATUS_WORDS = ["trạng thái", "status"];
-
-function buildRobotDeviceCommand(message: string): { command: string; payload?: Record<string, unknown> } {
-  const text = message.trim().toLowerCase();
-  if (ROBOT_STATUS_WORDS.some((w) => text.includes(w))) {
-    return { command: "status" };
-  }
-  return { command: "greet", payload: { text: message.trim() } };
-}
-
+// intent "robot_command" — giao cho Task Orchestrator, cùng nguyên tắc
+// handleVideoRequest/... : Conversation Agent KHÔNG tự nói chuyện với Device
+// Manager/Mock Robot, chỉ biết Orchestrator. Orchestrator chọn robot-task-agent
+// qua canHandle("robot_command") (src/lib/orchestrator/agents/robot-task-agent.ts,
+// agent đó mới thật sự dịch message → Device Command rồi gọi Device Manager).
+// finalOutput.message là câu trả lời thật từ Device Provider — dùng thẳng làm
+// reply (không JSON.stringify nguyên OrchestratorResult như các handler khác,
+// robot chat cần câu người đọc được để nói/hiển thị). meta mang theo command
+// thật đã chạy để client (Robot UI) suy ra mood/eyes/action, xem
+// src/lib/robot-ai/presentation.ts.
 async function handleRobotCommand(message: string): Promise<IntentOutcome> {
-  const { command, payload } = buildRobotDeviceCommand(message);
-  const result = await DeviceManager.execute({ deviceType: "robot", command, payload });
+  const result = await TaskOrchestrator.run("robot_command", message);
+  const output = result.finalOutput as { command?: string; message?: string; data?: Record<string, unknown> } | undefined;
 
   return {
-    reply: result.message,
+    reply: result.success ? output?.message : undefined,
     memoryUsed: 0,
     knowledgeUsed: 0,
     memoryWritten: false,
+    error: result.success ? undefined : result.error,
+    meta: output ? { command: output.command, data: output.data } : undefined,
   };
 }
 
@@ -372,5 +379,6 @@ export async function runConversationAgent(input: ConversationInput): Promise<Co
     knowledgeUsed: outcome.knowledgeUsed,
     memoryWritten: outcome.memoryWritten,
     latencyMs,
+    meta: outcome.meta,
   };
 }

@@ -26,4 +26,8 @@ export type ConversationResult = {
   memoryWritten: boolean;
   latencyMs: number;
   error?: string;
+  // meta — chi tiết bổ sung tuỳ intent (vd robot_command đính kèm device command
+  // thật đã chạy) để client (Robot UI) suy ra presentation (mood/eyes/action)
+  // KHÔNG phải đoán lại từ text. Optional, additive — client khác bỏ qua vô hại.
+  meta?: Record<string, unknown>;
 };

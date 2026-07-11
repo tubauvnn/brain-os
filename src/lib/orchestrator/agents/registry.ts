@@ -5,6 +5,7 @@ import { imageTaskAgent } from "./image-task-agent";
 import { projectTaskAgent } from "./project-task-agent";
 import { voiceTaskAgent } from "./voice-task-agent";
 import { toolTaskAgent } from "./tool-task-agent";
+import { robotTaskAgent } from "./robot-task-agent";
 import { projectContextProvider, projectRecorder } from "./project-integration";
 import { characterAssetProvider } from "./character-asset-provider";
 
@@ -27,6 +28,7 @@ TaskOrchestrator.register(imageTaskAgent);
 TaskOrchestrator.register(projectTaskAgent);
 TaskOrchestrator.register(voiceTaskAgent);
 TaskOrchestrator.register(toolTaskAgent);
+TaskOrchestrator.register(robotTaskAgent);
 
 // Đăng ký Project Context/Recorder + Character Asset Provider (3 seam tuỳ
 // chọn của Orchestrator, xem orchestrator.ts). Đây là NƠI DUY NHẤT Orchestrator

@@ -36,10 +36,12 @@ export type RobotHardwareCommand = {
   payload?: Record<string, unknown>;
 };
 
-// "local" | "openai" | "deepseek" | "openrouter" là bộ chính theo spec demo.
-// codex_cli/claude_cli/gemini_cli chỉ xuất hiện khi gọi chat với body.deep=true
-// (chế độ CLI agent có sẵn từ trước, xem src/lib/brain/cli-agent-router.ts) —
-// giữ lại để không phá tính năng cũ, không phải chế độ mặc định của demo.
+// "local" (remember/recall_memory/robot_command — không gọi model) và "openai"
+// (chat, qua Model Router hiện tại, xem src/lib/model/) là 2 giá trị route.ts
+// thực sự trả từ Phase 6A trở đi. deepseek/openrouter/codex_cli/claude_cli/
+// gemini_cli không còn đường nào tạo ra (chế độ body.deep=true qua CLI agent
+// router đã bị thay bằng Conversation Agent thật) — giữ lại type để không phá
+// dữ liệu ConversationMessage.provider cũ đã lưu với các giá trị này.
 export type RobotProvider =
   | "local"
   | "openai"

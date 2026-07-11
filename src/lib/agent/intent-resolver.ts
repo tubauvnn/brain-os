@@ -23,14 +23,35 @@ export type Intent =
 // vertical slice này. Nâng cấp lên model-based classification là bước sau,
 // ngoài phạm vi hiện tại.
 
-const REMEMBER_PHRASES = ["nhớ rằng", "mày nhớ", "ghi nhớ", "nhớ giúp", "remember that", "please remember"];
+const REMEMBER_PHRASES = ["nhớ rằng", "ghi nhớ", "nhớ giúp", "remember that", "please remember"];
 
-const RECALL_MEMORY_PHRASES = ["đã nói gì về", "nhớ gì về", "nhớ không về", "what did i say about", "mày có nhớ"];
+// "mày nhớ" đứng RIÊNG ở recall (không phải remember) — câu thật tế hay dùng
+// dạng câu hỏi "mày nhớ ... không?" (Phase 6A robot verify: "Mày nhớ tao đang
+// làm gì không?"), không phải lệnh ghi nhớ mới. Trước đây "mày nhớ" nằm trong
+// REMEMBER_PHRASES, khớp NHẦM câu hỏi này thành "remember" (ghi luôn câu hỏi
+// làm memory mới thay vì trả lời) — sửa bằng cách chuyển hẳn sang recall.
+const RECALL_MEMORY_PHRASES = [
+  "đã nói gì về",
+  "nhớ gì về",
+  "nhớ không về",
+  "what did i say about",
+  "mày có nhớ",
+  "mày nhớ",
+];
 
 // robot_command đòi hỏi cả 2: có từ "robot" VÀ 1 động từ hành động — tránh khớp
 // nhầm câu chat thường chứa 1 trong các âm tiết ngắn này.
 // "chào"/"greet" thêm cho Phase 2 (Device Manager, lệnh "robot chào khách").
-const ROBOT_ACTION_WORDS = ["đi", "tới", "quay", "dừng", "tiến", "lùi", "di chuyển", "chào", "greet"];
+// "kết nối"/"connect" thêm cho Phase 6A — câu hỏi trạng thái kết nối phần cứng
+// ("Robot thật đã kết nối chưa?") cũng cần đi qua Device Manager để trả lời
+// THẬT (mock/simulator hay đã có ESP32 thật), không để model đoán bừa.
+const ROBOT_ACTION_WORDS = ["đi", "tới", "quay", "dừng", "tiến", "lùi", "di chuyển", "chào", "greet", "kết nối", "connect"];
+
+// Phase 6A — các câu lệnh demo cố định trên UI /robot (DEMO_BUTTONS trong
+// src/app/robot/page.tsx) không chứa từ "robot" nên không khớp
+// ROBOT_ACTION_WORDS ở trên — liệt kê thẳng để vẫn đi qua Device Manager thay
+// vì rơi xuống "chat" (model không nên tự bịa hành động xoay đầu/ngủ/thức).
+const ROBOT_DEMO_PHRASES = ["chào khách", "quay trái", "quay phải", "ngủ đi", "thức dậy"];
 
 const VOICE_REQUEST_PHRASES = ["nói câu", "đọc câu", "đọc to", "nói to"];
 
@@ -75,7 +96,8 @@ function includesAny(text: string, phrases: string[]): boolean {
 }
 
 function isRobotCommand(text: string): boolean {
-  return text.includes("robot") && includesAny(text, ROBOT_ACTION_WORDS);
+  if (text.includes("robot") && includesAny(text, ROBOT_ACTION_WORDS)) return true;
+  return includesAny(text, ROBOT_DEMO_PHRASES);
 }
 
 export function resolveIntent(message: string): Intent {

@@ -7,7 +7,7 @@ import type { DeviceCommand, DeviceDescriptor, DeviceProvider, DeviceResult } fr
 // root) — KHÔNG đăng ký trong device-manager.ts, Device Manager không được biết
 // tới provider cụ thể nào.
 
-const SUPPORTED_COMMANDS = ["speak", "greet", "status", "move_placeholder"];
+const SUPPORTED_COMMANDS = ["speak", "greet", "status", "sleep", "wake", "turn_left", "turn_right", "move_placeholder"];
 
 function textOf(payload: Record<string, unknown> | undefined, fallback: string): string {
   const text = payload?.text;
@@ -60,6 +60,46 @@ async function execute(command: DeviceCommand): Promise<Omit<DeviceResult, "late
         status: "completed",
         message: "Mock robot is online.",
         data: { online: true, mode: "mock" },
+      };
+    }
+
+    case "sleep": {
+      return {
+        ...base,
+        success: true,
+        status: "completed",
+        message: "Mock robot đang ngủ (mô phỏng, chưa có servo/màn hình thật).",
+        data: { mode: "sleep" },
+      };
+    }
+
+    case "wake": {
+      return {
+        ...base,
+        success: true,
+        status: "completed",
+        message: "Mock robot đã thức dậy.",
+        data: { mode: "idle" },
+      };
+    }
+
+    case "turn_left": {
+      return {
+        ...base,
+        success: true,
+        status: "completed",
+        message: "Mock robot quay sang trái (mô phỏng, chưa có servo thật).",
+        data: { direction: "left" },
+      };
+    }
+
+    case "turn_right": {
+      return {
+        ...base,
+        success: true,
+        status: "completed",
+        message: "Mock robot quay sang phải (mô phỏng, chưa có servo thật).",
+        data: { direction: "right" },
       };
     }
 

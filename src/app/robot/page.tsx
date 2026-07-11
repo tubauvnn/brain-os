@@ -11,6 +11,13 @@ import { RobotFaceKiosk, type RobotFaceState } from "@/components/robot/RobotFac
 // Debug/raw JSON dồn hết vào <details> "Nâng cao", đóng mặc định. Lịch sử cũ
 // (camera/voice/realtime/hardware preview panel) đã có ở git history, không
 // còn trong UI chính — cần lại thì xem commit trước bản reset này.
+//
+// Phase 6A (2026-07-11) — UI KHÔNG đổi layout/thiết kế. /api/robot/chat giờ
+// nối thẳng Conversation Agent → Intent Resolver → Orchestrator/Memory/
+// Knowledge/Project Context/Device Manager thật (xem route.ts), không còn
+// local-skills.ts/demo-scenarios.ts kịch bản gõ sẵn. Giọng nói ưu tiên
+// VoiceAgent → ElevenLabs thật (/api/voice/generate), rơi về giọng trình
+// duyệt (Web Speech API) nếu ElevenLabs lỗi/chưa cấu hình — không bịa giọng.
 
 type RobotState = "idle" | "listening" | "thinking" | "speaking" | "happy" | "sleeping" | "error";
 
@@ -104,6 +111,35 @@ const CHAT_MEMORY_KEY = "robot_chuoi_demo_v3_history";
 const OLD_CHAT_MEMORY_KEYS = ["robot_chuoi_history", "robot_chuoi_clean_history", "robot_chuoi_chat_history"];
 const CHAT_MEMORY_LIMIT = 20;
 const CHAT_DISPLAY_LIMIT = 6;
+
+// sessionId — để Conversation Agent nhớ ngữ cảnh giữa các lượt hỏi trong cùng
+// phiên (xem loadSessionHistoryText trong conversation-agent.ts). Sinh 1 lần,
+// giữ trong localStorage — không phải UI hiển thị, chỉ là dây nối phía sau.
+const SESSION_ID_KEY = "robot_chuoi_session_id";
+
+// "Đọc lại"/"Dừng nói" xử lý NGAY trên client (không gọi API) — đây là điều
+// khiển UI (giống hệt 2 nút có sẵn "🔊 Tự động nói"/"⏹ Dừng nói"), không phải
+// nội dung AI bịa ra, nên không cần đi qua Conversation Agent.
+const REPLAY_PHRASES = ["đọc lại", "nói lại", "lặp lại", "nhắc lại"];
+// KHÔNG có "dừng lại" đơn lẻ ở đây — trùng với ROBOT_ACTION_WORDS
+// ("robot dừng lại" là lệnh robot thật, phải đi qua Conversation Agent, không
+// chặn ở client). Chỉ chặn client-side các cụm chắc chắn là "im giọng nói".
+const STOP_SPEECH_PHRASES = ["dừng nói", "im lặng", "ngừng nói", "thôi nói"];
+
+function stripDiacriticsForMatch(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .trim();
+}
+
+function matchesAnyPhrase(text: string, phrases: string[]): boolean {
+  const normalized = ` ${stripDiacriticsForMatch(text)} `;
+  return phrases.some((p) => normalized.includes(` ${stripDiacriticsForMatch(p)} `));
+}
 
 const GREETING: ChatMessage = {
   id: "greet",
@@ -217,6 +253,24 @@ export default function RobotPage() {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const viVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const sessionIdRef = useRef<string>("");
+
+  // sessionId ổn định qua các lần mở lại trang — sinh 1 lần, lưu localStorage.
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(SESSION_ID_KEY);
+      if (saved) {
+        sessionIdRef.current = saved;
+      } else {
+        const generated = crypto.randomUUID();
+        sessionIdRef.current = generated;
+        window.localStorage.setItem(SESSION_ID_KEY, generated);
+      }
+    } catch {
+      sessionIdRef.current = `robot-${Date.now()}`;
+    }
+  }, []);
 
   // Dọn key localStorage cũ + nạp lịch sử của bản này (nếu có), lúc mount.
   useEffect(() => {
@@ -272,7 +326,7 @@ export default function RobotPage() {
     setSttSupported(getSpeechRecognitionConstructor() !== null);
   }, []);
 
-  function speak(text: string, onDone: () => void) {
+  function speakBrowser(text: string, onDone: () => void) {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       onDone();
       return;
@@ -290,7 +344,43 @@ export default function RobotPage() {
     window.speechSynthesis.speak(utter);
   }
 
+  // Giọng thật ưu tiên VoiceAgent → ElevenLabs (/api/voice/generate, cùng
+  // route Voice Agent trong Orchestrator dùng — không tạo route TTS thứ 2).
+  // ElevenLabs lỗi/chưa cấu hình (ELEVENLABS_API_KEY) → rơi về giọng trình
+  // duyệt, KHÔNG im lặng, không bịa audio.
+  async function speak(text: string, onDone: () => void) {
+    setRobotState("speaking");
+    try {
+      const res = await fetch("/api/voice/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const json = (await res.json()) as { success: boolean; audioUrl?: string };
+      if (!json.success || !json.audioUrl) {
+        speakBrowser(text, onDone);
+        return;
+      }
+      if (typeof window === "undefined") {
+        onDone();
+        return;
+      }
+      const audio = audioRef.current ?? new Audio();
+      audioRef.current = audio;
+      audio.src = json.audioUrl;
+      audio.onended = onDone;
+      audio.onerror = () => speakBrowser(text, onDone);
+      await audio.play();
+    } catch {
+      speakBrowser(text, onDone);
+    }
+  }
+
   function stopSpeaking() {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
     setRobotState("idle");
   }
@@ -311,9 +401,39 @@ export default function RobotPage() {
     errorTimerRef.current = setTimeout(() => setRobotState("idle"), 1500);
   }
 
+  // "Đọc lại"/"Dừng nói" — điều khiển audio ngay trên client, không gọi
+  // /api/robot/chat (không phải câu hỏi cho AI, chỉ là lệnh UI, xem
+  // REPLAY_PHRASES/STOP_SPEECH_PHRASES ở đầu file).
+  function handleStopSpeechCommand(text: string) {
+    setChatInput("");
+    stopSpeaking();
+    setMessages((prev) => [
+      ...prev,
+      { id: `local-${Date.now()}`, role: "user", content: text, created_at: new Date().toISOString() },
+      { id: `local-stop-${Date.now()}`, role: "robot", content: "Chuối dừng nói rồi.", created_at: new Date().toISOString() },
+    ]);
+  }
+
+  function handleReplayCommand(text: string) {
+    setChatInput("");
+    const lastRobotMessage = [...messages].reverse().find((m) => m.role === "robot");
+    setMessages((prev) => [
+      ...prev,
+      { id: `local-${Date.now()}`, role: "user", content: text, created_at: new Date().toISOString() },
+    ]);
+    if (!lastRobotMessage) return;
+    const mapped = moodToState(lastResponse?.mood) ?? "idle";
+    if (autoSpeak) {
+      speak(lastRobotMessage.content, () => setRobotState(mapped));
+    }
+  }
+
   async function sendChatMessage(rawText: string) {
     const text = rawText.trim();
     if (!text || chatLoading) return;
+    if (matchesAnyPhrase(text, STOP_SPEECH_PHRASES)) return handleStopSpeechCommand(text);
+    if (matchesAnyPhrase(text, REPLAY_PHRASES)) return handleReplayCommand(text);
+
     setChatLoading(true);
     setChatInput("");
     setLastSuggestions([]);
@@ -327,7 +447,7 @@ export default function RobotPage() {
       const res = await fetch("/api/robot/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, source: "text" }),
+        body: JSON.stringify({ text, source: "text", sessionId: sessionIdRef.current || undefined }),
       });
       const json = (await res.json()) as ChatResponse;
 
