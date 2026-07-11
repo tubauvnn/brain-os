@@ -15,6 +15,11 @@ import { observeBody } from "@/lib/robot/body/body-state";
 import { ActionExecutor } from "@/lib/robot/body/action-executor";
 import type { ActionOutcome, BodyExecutor, BodyState } from "@/lib/robot/body/types";
 import type { RobotMood } from "@/lib/robot-ai/types";
+import { VoiceCapture } from "@/components/robot/VoiceCapture";
+import { TurnStateMachine } from "@/lib/robot/voice/turn-state";
+import type { TurnState } from "@/lib/robot/voice/types";
+import { matchFastCommand } from "@/lib/robot/voice/fast-commands";
+import { matchesAnyPhrase, stripDiacriticsForMatch } from "@/lib/robot/voice/text-match";
 
 // Bản reset (2026-07-08) — 1 màn demo sạch: mặt robot + 6 nút demo + chat gọn.
 // KHÔNG có camera, KHÔNG có hands-free voice loop, KHÔNG có OpenAI Realtime.
@@ -186,6 +191,11 @@ const SUGGESTION_TEXT_MAP: Record<string, string> = {
 const MIN_THINKING_MS = 300;
 
 const AUTO_SPEAK_KEY = "robot_chuoi_auto_speak";
+// Mục 2 "VOICE_HANDS_FREE_ENABLED... Default off until manually enabled" —
+// LƯU ý CHỌN của người dùng để hiển thị lại, nhưng KHÔNG tự đọc lại vào
+// state hands-free lúc mount (mục 12 "Survive browser refresh WITHOUT
+// auto-starting the microphone") — mic chỉ mở lại khi có thao tác bấm thật.
+const VOICE_HANDS_FREE_KEY = "robot_chuoi_voice_hands_free";
 
 const CHAT_MEMORY_KEY = "robot_chuoi_demo_v3_history";
 // Key cũ của các bản trước — CHỦ ĐỘNG không load, chỉ dọn rác localStorage.
@@ -207,21 +217,6 @@ const REPLAY_PHRASES = ["đọc lại", "nói lại", "lặp lại", "nhắc l�
 // chặn ở client). Chỉ chặn client-side các cụm chắc chắn là "im giọng nói".
 const STOP_SPEECH_PHRASES = ["dừng nói", "im lặng", "ngừng nói", "thôi nói"];
 
-function stripDiacriticsForMatch(text: string): string {
-  return text
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/Đ/g, "D")
-    .toLowerCase()
-    .trim();
-}
-
-function matchesAnyPhrase(text: string, phrases: string[]): boolean {
-  const normalized = ` ${stripDiacriticsForMatch(text)} `;
-  return phrases.some((p) => normalized.includes(` ${stripDiacriticsForMatch(p)} `));
-}
-
 const GREETING: ChatMessage = {
   id: "greet",
   role: "robot",
@@ -229,43 +224,13 @@ const GREETING: ChatMessage = {
   created_at: new Date(0).toISOString(),
 };
 
-// ─── Web Speech API — khai báo tối thiểu, chỉ 1 lượt nghe (không có lib.dom) ──
-interface SpeechRecognitionAlternativeLike {
-  transcript: string;
-}
-interface SpeechRecognitionResultLike {
-  readonly length: number;
-  readonly isFinal: boolean;
-  [index: number]: SpeechRecognitionAlternativeLike;
-}
-interface SpeechRecognitionResultListLike {
-  readonly length: number;
-  [index: number]: SpeechRecognitionResultLike;
-}
-interface SpeechRecognitionEventLike extends Event {
-  resultIndex: number;
-  results: SpeechRecognitionResultListLike;
-}
-interface SpeechRecognitionLike extends EventTarget {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  start: () => void;
-  stop: () => void;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
-  onend: (() => void) | null;
-}
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
-  if (typeof window === "undefined") return null;
-  const w = window as unknown as {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  };
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
+// Phase 6I (2026-07-11) — Natural Voice Conversation Engine. Mic không còn
+// dùng Web Speech API (STT của trình duyệt, không provider-neutral) — ghi
+// âm thật (getUserMedia + MediaRecorder, xem VoiceCapture.tsx) rồi gửi lên
+// /api/robot/transcribe (OpenAI qua SttRouter, xem src/lib/stt/) để có
+// transcript "thật", cùng đường /api/robot/chat/RobotAgent/VoiceAgent/
+// ElevenLabs đã có — KHÔNG tạo hệ thống hội thoại thứ 2. Khai báo
+// SpeechRecognitionLike cũ đã bỏ, xem git history nếu cần lại.
 
 export default function RobotPage() {
   const [robotState, setRobotState] = useState<RobotState>("idle");
@@ -329,9 +294,28 @@ export default function RobotPage() {
   const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
   const [lastSuggestions, setLastSuggestions] = useState<string[]>([]);
 
-  const [sttSupported, setSttSupported] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const [isListening, setIsListening] = useState(false); // mic đang capture — push-to-talk giữ HOẶC hands-free đang mở
+
+  // ─── Voice Conversation Engine (Phase 6I) ───────────────────────────────
+  const [handsFreeEnabled, setHandsFreeEnabled] = useState(false); // mục 2 "Default off until manually enabled"
+  const [pushToTalkActive, setPushToTalkActive] = useState(false);
+  const [turnState, setTurnState] = useState<TurnState>("idle");
+  // "Partial transcript" (mục 9) — /api/robot/transcribe KHÔNG streaming
+  // (OpenAI audio/transcriptions là REST 1 lần, không phải API streaming),
+  // nên đây là trạng thái TRUNG GIAN hiển thị ("Đang nghe.../Đang nhận diện
+  // giọng nói...") thay vì chữ từng phần thật — trung thực với những gì
+  // provider hiện có thật sự cung cấp, không bịa transcript giả.
+  const [voiceTranscriptDisplay, setVoiceTranscriptDisplay] = useState<string | null>(null);
+  const [inputLevel, setInputLevel] = useState(0); // 0..100, mục 13 "small input level indicator"
+  const [micErrorMessage, setMicErrorMessage] = useState<string | null>(null);
+  const [lastFailedRecording, setLastFailedRecording] = useState<Blob | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<{ sttAvailable: boolean; ttsAvailable: boolean } | null>(null);
+  const turnMachineRef = useRef<TurnStateMachine | null>(null);
+  if (!turnMachineRef.current) turnMachineRef.current = new TurnStateMachine();
+  // Câu Chuối vừa nói — dùng để lọc "tiếng vọng" (mục 7 duplicate transcript
+  // suppression: STT lỡ nghe lại chính giọng Chuối dù đã echoCancellation).
+  const lastRobotReplyRef = useRef<string | null>(null);
+  const [postPlaybackCooldown, setPostPlaybackCooldown] = useState(false);
 
   const viVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -444,8 +428,22 @@ export default function RobotPage() {
     return () => window.speechSynthesis.removeEventListener("voiceschanged", pickVietnameseVoice);
   }, []);
 
+  // GET /api/robot/voice/status (Phase 6I mục 14) — 1 lần lúc vào trang, để
+  // biết STT thật có cấu hình không TRƯỚC KHI người dùng bấm mic (mục 15
+  // "explain briefly" nếu chưa cấu hình, thay vì để họ bấm rồi mới báo lỗi).
   useEffect(() => {
-    setSttSupported(getSpeechRecognitionConstructor() !== null);
+    let cancelled = false;
+    fetch("/api/robot/voice/status")
+      .then((res) => res.json())
+      .then((json: { stt?: { available?: boolean }; tts?: { available?: boolean } }) => {
+        if (!cancelled) setVoiceStatus({ sttAvailable: !!json.stt?.available, ttsAvailable: !!json.tts?.available });
+      })
+      .catch(() => {
+        if (!cancelled) setVoiceStatus({ sttAvailable: false, ttsAvailable: false });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function speakBrowser(text: string, onDone: () => void) {
@@ -1025,36 +1023,254 @@ export default function RobotPage() {
     sendChatMessage(SUGGESTION_TEXT_MAP[label] ?? label);
   }
 
-  function toggleMic() {
-    if (!sttSupported) return;
-    if (isListening) {
-      recognitionRef.current?.stop();
+  // ─── Voice Conversation Engine (Phase 6I) ───────────────────────────────
+  // Mục 7 "speaking-state gating"/"post-playback cooldown" — CÙNG 1 đòn bẩy
+  // (ngưỡng VAD cao hơn tạm thời), KHÔNG tắt hẳn mic (mục "Do not
+  // permanently disable the microphone during hands-free mode").
+  const HANDS_FREE_VAD_GATING_THRESHOLD = 0.09; // mặc định VadEngine ~0.025 — cao hơn hẳn, khó kích hoạt hơn nhưng vẫn CÓ THỂ (barge-in thật vẫn lọt qua)
+  const POST_PLAYBACK_COOLDOWN_MS = 500;
+  const vadThresholdOverride = robotState === "speaking" || postPlaybackCooldown ? HANDS_FREE_VAD_GATING_THRESHOLD : undefined;
+  const voiceCaptureEnabled = handsFreeEnabled || pushToTalkActive;
+
+  useEffect(() => {
+    setIsListening(voiceCaptureEnabled);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handsFreeEnabled, pushToTalkActive]);
+
+  // Mục 7 duplicate transcript suppression — STT lỡ nghe lại chính giọng
+  // Chuối vừa nói (tiếng vọng lọt qua dù đã echoCancellation) thì bỏ qua.
+  function isLikelyEcho(transcript: string, lastReply: string | null): boolean {
+    if (!lastReply) return false;
+    const normalized = stripDiacriticsForMatch(transcript);
+    if (normalized.length < 6) return false; // câu quá ngắn, so khớp không đáng tin — không chặn oan câu thật ngắn của người dùng
+    return stripDiacriticsForMatch(lastReply).includes(normalized);
+  }
+
+  function applyTurnEvent(event: Parameters<TurnStateMachine["transition"]>[0]) {
+    const result = turnMachineRef.current!.transition(event);
+    setTurnState(result.state);
+    return result;
+  }
+
+  // Gửi transcript ĐÃ CHỐT (mục 9 "Only final transcript is sent to
+  // RobotAgent") sang /api/robot/chat — CÙNG route/RobotAgent/Personality/
+  // VoiceAgent text chat đã dùng (mục "Do not create a second conversation
+  // system"), chỉ thêm source:"voice" + metadata STT. Viết hàm riêng thay vì
+  // tái dùng sendChatMessage() để không đụng luồng chat gõ tay đã ổn định
+  // (mục "Do not replace existing text chat") — 2 hàm CHIA SẺ speak()/
+  // applyGaze()/stopSpeaking(), không trùng lặp logic gọi model/TTS.
+  async function sendVoiceTranscript(text: string, durationMs: number, sttProvider: string) {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      applyTurnEvent("transcript_empty"); // mục 15 "do not send an empty message"
       return;
     }
-    const Ctor = getSpeechRecognitionConstructor();
-    if (!Ctor) return;
-    const recognition = new Ctor();
-    recognition.lang = "vi-VN";
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    if (isLikelyEcho(trimmed, lastRobotReplyRef.current)) {
+      applyTurnEvent("transcript_empty");
+      return;
+    }
 
-    recognition.onresult = (event) => {
-      const result = event.results[event.results.length - 1];
-      const text = result?.[0]?.transcript?.trim();
-      if (text) sendChatMessage(text);
-    };
-    recognition.onerror = () => setIsListening(false);
-    recognition.onend = () => setIsListening(false);
+    // Mục 8 "Fast command path" — CHỈ dừng/đọc-lại chặn ở đây, xem lý do đầy
+    // đủ trong fast-commands.ts (các lệnh robot_command khác đã nhanh sẵn ở
+    // server, không cần chặn thêm — tránh "hệ thống hội thoại thứ 2").
+    const fast = matchFastCommand(trimmed);
+    if (fast === "stop_speech") {
+      stopSpeaking();
+      applyTurnEvent("transcript_empty");
+      return;
+    }
+    if (fast === "replay") {
+      applyTurnEvent("transcript_empty");
+      handleReplayCommand(trimmed);
+      return;
+    }
 
-    recognitionRef.current = recognition;
-    setIsListening(true);
-    setRobotState("listening");
-    recognition.start();
+    applyTurnEvent("transcript_ready");
+    setVoiceTranscriptDisplay(null);
+    setChatInput("");
+    setLastSuggestions([]);
+    setMessages((prev) => [...prev, { id: `voice-${Date.now()}`, role: "user", content: trimmed, created_at: new Date().toISOString() }]);
+    setRobotState("thinking");
+
+    try {
+      const res = await fetch("/api/robot/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: trimmed,
+          source: "voice",
+          sttMode: "openai",
+          sttProvider,
+          durationMs,
+          sessionId: sessionIdRef.current || undefined,
+        }),
+      });
+      const json = (await res.json()) as ChatResponse;
+      if (!json.ok || !json.reply) {
+        flashError();
+        applyTurnEvent("fail");
+        return;
+      }
+
+      setLastResponse(json);
+      setLastSuggestions(json.suggestedNextActions ?? []);
+      lastRobotReplyRef.current = json.reply;
+      setMessages((prev) => [
+        ...prev,
+        { id: `voice-reply-${Date.now()}`, role: "robot", content: json.reply as string, created_at: new Date().toISOString() },
+      ]);
+      brainLoopRef.current?.noteTopic(
+        Date.now(),
+        {
+          frame: latestFrameRef.current,
+          presenceEnabled,
+          conversationState: "thinking",
+          voicePlaying: false,
+          projectContext,
+          sellingContext,
+          chatMood: json.mood as RobotMood | undefined,
+        },
+        trimmed
+      );
+      applyGaze(json.eyes);
+      applyTurnEvent("reply_ready");
+
+      const mapped = moodToState(json.mood) ?? "idle";
+      // Mục 11 "Robot face/state must follow actual audio lifecycle, not
+      // timers" — finishTurn() CHỈ chạy sau khi speak() thật sự phát xong
+      // (hoặc ngay lập tức nếu autoSpeak tắt, coi như "phát" xong luôn).
+      const finishTurn = () => {
+        setRobotState(mapped);
+        applyTurnEvent("playback_end");
+        setPostPlaybackCooldown(true);
+        setTimeout(() => setPostPlaybackCooldown(false), POST_PLAYBACK_COOLDOWN_MS);
+      };
+      if (autoSpeak && json.reply.trim()) speak(json.reply, finishTurn);
+      else finishTurn();
+    } catch {
+      flashError();
+      applyTurnEvent("fail");
+    }
+  }
+
+  // Ghi âm xong 1 lượt (VAD kết thúc HOẶC nhả nút push-to-talk) → gửi lên
+  // /api/robot/transcribe (mục 3, provider-neutral qua SttRouter).
+  async function handleSpeechEnd(blob: Blob, durationMs: number) {
+    applyTurnEvent("speech_end");
+    setVoiceTranscriptDisplay("Đang nhận diện...");
+    setLastFailedRecording(null);
+
+    try {
+      const form = new FormData();
+      form.append("audio", blob, "speech.webm");
+      form.append("language", "vi");
+      if (sessionIdRef.current) form.append("sessionId", sessionIdRef.current);
+
+      const res = await fetch("/api/robot/transcribe", { method: "POST", body: form });
+      const json = (await res.json()) as { ok: boolean; text?: string; provider?: string; error?: string };
+
+      if (!json.ok || !json.text) {
+        setVoiceTranscriptDisplay(null);
+        // Lỗi HTTP thật (STT provider/network lỗi) — giữ bản ghi để retry
+        // (mục 15). "Không nghe rõ nội dung" (res.ok nhưng ok:false) không
+        // cần retry CÙNG bản ghi — im lặng/tiếng ồn ghi lại cũng vậy thôi.
+        if (!res.ok) setLastFailedRecording(blob);
+        applyTurnEvent("transcript_empty");
+        return;
+      }
+
+      setVoiceTranscriptDisplay(json.text);
+      setChatInput(json.text);
+      await sendVoiceTranscript(json.text, durationMs, json.provider ?? "openai_transcribe");
+    } catch {
+      setLastFailedRecording(blob);
+      setVoiceTranscriptDisplay(null);
+      applyTurnEvent("fail");
+    }
+  }
+
+  // Mục 5 "Barge-in" — VAD phát hiện người dùng bắt đầu nói TRONG LÚC Chuối
+  // đang nói: dừng audio NGAY (đồng bộ, mục "under 250ms"), rồi mới log.
+  function handleSpeechStart() {
+    const wasBargeIn = turnMachineRef.current!.current === "speaking";
+    if (wasBargeIn) stopSpeaking();
+    applyTurnEvent("speech_start");
+    applyTurnEvent("resume_capture"); // no-op nếu không phải "interrupted" — bảng transition tự bỏ qua sự kiện sai state
+    setVoiceTranscriptDisplay("Đang nghe...");
+    if (wasBargeIn) {
+      fetch("/api/robot/voice/interrupt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sessionIdRef.current, reason: "barge_in" }),
+      }).catch(() => {});
+    }
+  }
+
+  // Mục 15 "If microphone permission is denied: keep text chat working,
+  // explain briefly" — tắt hẳn 2 chế độ voice, KHÔNG đụng gì tới chat chữ.
+  function handleMicError(message: string) {
+    setMicErrorMessage(message);
+    setHandsFreeEnabled(false);
+    setPushToTalkActive(false);
+    applyTurnEvent("fail");
+  }
+
+  function retryLastRecording() {
+    if (!lastFailedRecording) return;
+    const blob = lastFailedRecording;
+    setLastFailedRecording(null);
+    handleSpeechEnd(blob, 0);
+  }
+
+  function toggleHandsFree() {
+    setHandsFreeEnabled((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(VOICE_HANDS_FREE_KEY, String(next));
+      } catch {
+        // bỏ qua — không chặn tính năng
+      }
+      if (next) {
+        setMicErrorMessage(null);
+        applyTurnEvent("enable");
+        fetch("/api/robot/voice/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: sessionIdRef.current, handsFreeEnabled: true }),
+        }).catch(() => {});
+      } else {
+        applyTurnEvent("disable");
+        setVoiceTranscriptDisplay(null);
+        setRobotState("idle");
+      }
+      return next;
+    });
+  }
+
+  function startPushToTalk() {
+    if (handsFreeEnabled) return;
+    setMicErrorMessage(null);
+    applyTurnEvent("enable");
+    setPushToTalkActive(true);
+  }
+
+  function endPushToTalk() {
+    setPushToTalkActive(false); // VoiceCapture tự dừng ghi âm qua useEffect theo dõi prop này, gọi handleSpeechEnd
   }
 
   return (
     <div className="p-4 sm:p-6 max-w-[1120px] mx-auto">
       <PresenceDetector enabled={presenceEnabled} onFrame={handlePresenceFrame} />
+      <VoiceCapture
+        enabled={voiceCaptureEnabled}
+        handsFree={handsFreeEnabled}
+        pushToTalkActive={pushToTalkActive}
+        vadThreshold={vadThresholdOverride}
+        onSpeechStart={handleSpeechStart}
+        onSpeechEnd={handleSpeechEnd}
+        onVolumeLevel={setInputLevel}
+        onMicError={handleMicError}
+      />
       <PageHeader
         title="Robot Chuối"
         description="Robot mô phỏng trên web, trước khi nối ESP32-S3"
@@ -1145,6 +1361,16 @@ export default function RobotPage() {
                   className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-zinc-700 active:scale-95 transition-all"
                 >
                   ⏹ Dừng nói
+                </button>
+                <button
+                  onClick={toggleHandsFree}
+                  disabled={voiceStatus !== null && !voiceStatus.sttAvailable}
+                  title="Mic mở liên tục, tự nghe/tự gửi khi bạn nói xong (Phase 6I)"
+                  className={`text-[11px] px-2.5 py-1 rounded-lg active:scale-95 transition-all disabled:opacity-40 ${
+                    handsFreeEnabled ? "bg-emerald-600/30 text-emerald-300" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                  }`}
+                >
+                  🎙️ Rảnh tay: {handsFreeEnabled ? "Bật" : "Tắt"}
                 </button>
                 <button
                   onClick={clearChat}
@@ -1255,16 +1481,59 @@ export default function RobotPage() {
                 🖼️ Tải ảnh lên
               </button>
             </div>
+            {/* Voice (Phase 6I) — trạng thái/transcript/mức âm lượng, mục 13 */}
+            {(voiceCaptureEnabled || voiceTranscriptDisplay || micErrorMessage || lastFailedRecording) && (
+              <div className="mb-2 flex flex-col gap-1.5">
+                {voiceCaptureEnabled && (
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        turnState === "hearing" ? "bg-red-400 animate-pulse" : turnState === "listening" ? "bg-emerald-400" : "bg-zinc-600"
+                      }`}
+                    />
+                    <span className="text-[11px] text-zinc-500 shrink-0">
+                      {turnState === "listening" && "Đang nghe, sẵn sàng..."}
+                      {turnState === "hearing" && "Đang ghi âm..."}
+                      {turnState === "transcribing" && "Đang nhận diện..."}
+                      {turnState === "interrupted" && "Đã ngắt lời Chuối..."}
+                    </span>
+                    <div className="flex-1 h-1.5 rounded-full bg-zinc-800 overflow-hidden max-w-[100px]">
+                      <div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${inputLevel}%` }} />
+                    </div>
+                  </div>
+                )}
+                {voiceTranscriptDisplay && <p className="text-xs text-zinc-400 italic">&ldquo;{voiceTranscriptDisplay}&rdquo;</p>}
+                {micErrorMessage && <p className="text-xs text-amber-500">{micErrorMessage} — chat gõ chữ vẫn dùng bình thường.</p>}
+                {lastFailedRecording && (
+                  <button
+                    onClick={retryLastRecording}
+                    className="self-start text-[11px] px-2.5 py-1 rounded-lg bg-amber-600/20 text-amber-300 hover:bg-amber-600/30 active:scale-95 transition-all"
+                  >
+                    🔁 Thử lại nhận diện
+                  </button>
+                )}
+              </div>
+            )}
             <div className="flex gap-2">
-              {sttSupported && (
+              {!handsFreeEnabled && (voiceStatus === null || voiceStatus.sttAvailable) && (
                 <button
-                  onClick={toggleMic}
-                  title="Bấm nói"
+                  onMouseDown={startPushToTalk}
+                  onMouseUp={endPushToTalk}
+                  onMouseLeave={() => pushToTalkActive && endPushToTalk()}
+                  onTouchStart={(e) => {
+                    e.preventDefault();
+                    startPushToTalk();
+                  }}
+                  onTouchEnd={(e) => {
+                    e.preventDefault();
+                    endPushToTalk();
+                  }}
+                  title="Giữ để nói"
                   className={`min-h-[3rem] w-12 shrink-0 rounded-xl flex items-center justify-center text-lg transition-all active:scale-95 ${
-                    isListening ? "bg-red-600/40 text-red-300" : "bg-zinc-800 text-zinc-300 hover:bg-indigo-600/30"
+                    pushToTalkActive ? "bg-red-600/40 text-red-300" : "bg-zinc-800 text-zinc-300 hover:bg-indigo-600/30"
                   }`}
                 >
-                  {isListening ? "⏹" : "🎤"}
+                  {pushToTalkActive ? "⏺" : "🎤"}
                 </button>
               )}
               <input
