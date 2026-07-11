@@ -16,7 +16,7 @@ import type { DeviceCommand, DeviceDescriptor, DeviceProvider, DeviceResult } fr
 
 const SUPPORTED_COMMANDS = ["speak", "greet", "status", "sleep", "wake", "turn_left", "turn_right"];
 
-const NO_HARDWARE_NOTE = "Hiện tại đây là robot mô phỏng trên web, chưa kết nối phần cứng ESP32 thật.";
+const NO_HARDWARE_NOTE = "Phần đó chưa nối phần cứng ESP32 thật.";
 
 function textOf(payload: Record<string, unknown> | undefined, fallback: string): string {
   const text = payload?.text;
@@ -97,7 +97,7 @@ async function execute(command: DeviceCommand): Promise<Omit<DeviceResult, "late
         ...base,
         success: true,
         status: "completed",
-        message: `Tôi đã nhận lệnh quay trái. Hiện chưa có phần cứng nên tôi chỉ cập nhật trạng thái mô phỏng.`,
+        message: `Tôi đã nhận lệnh quay trái. ${NO_HARDWARE_NOTE}`,
         data: { direction: "left", hardwareConnected: false },
       };
     }
@@ -107,7 +107,7 @@ async function execute(command: DeviceCommand): Promise<Omit<DeviceResult, "late
         ...base,
         success: true,
         status: "completed",
-        message: `Tôi đã nhận lệnh quay phải. Hiện chưa có phần cứng nên tôi chỉ cập nhật trạng thái mô phỏng.`,
+        message: `Tôi đã nhận lệnh quay phải. ${NO_HARDWARE_NOTE}`,
         data: { direction: "right", hardwareConnected: false },
       };
     }
@@ -117,7 +117,7 @@ async function execute(command: DeviceCommand): Promise<Omit<DeviceResult, "late
         ...base,
         success: false,
         status: "failed",
-        message: `Tôi chưa hỗ trợ lệnh "${command.command}" ở robot mô phỏng này.`,
+        message: `Tôi chưa hỗ trợ lệnh "${command.command}".`,
         error: "unsupported_command",
       };
   }

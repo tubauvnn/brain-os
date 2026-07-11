@@ -5,10 +5,17 @@ import type { HumorCategory } from "./types";
 // Bắc, thân thiện, hơi tinh nghịch, dễ thương, KHÔNG BAO GIỜ phản cảm. Các
 // câu có dấu (*) là nguyên văn ví dụ trong yêu cầu gốc.
 //
-// Cố tình dùng "tớ/mình" (không phải "tôi" như lớp Personality của chat
-// thường, xem src/lib/robot-ai/personality.ts) — đây là giọng MASCOT xã
-// giao/chủ động, khác kênh với câu trả lời chat (vẫn "tôi" như cũ, không đổi
-// gì ở personality.ts), tách biệt hoàn toàn 2 luồng nội dung.
+// Cố tình dùng "tớ/mình" (KHÔNG phải "tao/mày" như lớp Personality của chat
+// text/voice từ 2026-07-11, xem src/lib/robot-ai/personality.ts) — đây là
+// giọng MASCOT xã giao/chủ động dành cho KHÁCH VÃNG LAI ẩn danh qua camera
+// (Phase 6F), khác hẳn ngữ cảnh chat/voice (mặc định coi là CHỦ, vì hệ
+// thống chỉ có 1 người dùng thật gõ/nói vào, không đăng nhập nhiều người).
+// "tớ/mình" ở đây CHÍNH LÀ bản dịch của yêu cầu "Visitors receive polite
+// replies" — khách lạ được giọng lịch sự hơn owner, không phải giọng
+// tao/mày. KHÔNG trộn 2 giọng vào cùng 1 nhóm câu — nếu sau này cần thêm
+// câu "chủ động" kiểu tao/mày (mục PROACTIVE của yêu cầu persona), đó là
+// việc của 1 kênh khác (chat/voice-side idle nudge, hiện CHƯA có cơ chế
+// này), không phải nhét vào đây.
 
 const LINES: Record<HumorCategory, string[]> = {
   greeting: [
@@ -52,6 +59,7 @@ const LINES: Record<HumorCategory, string[]> = {
     "Combo cơm nắm với mỳ trộn đang được nhiều bạn gọi lắm nha.",
     "Nếu bạn chưa biết ăn gì, cơm nắm ở đây là lựa chọn không tệ đâu.",
     "Hình như đang có ưu đãi hay ho ở quầy, hỏi nhân viên cho chắc nha.",
+    "Cơm nắm gà Hàn hôm nay nhiều người chọn lắm.",
   ],
 };
 

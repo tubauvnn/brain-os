@@ -290,11 +290,26 @@ async function handleForgetMemory(ctx: ExecutionContext): Promise<IntentOutcome>
   };
 }
 
+// Câu hỏi RÕ RÀNG muốn đầy đủ (không phải hỏi nhanh "làm đến đâu rồi") mới
+// trả bản chi tiết — mặc định NGẮN (2026-07-11, brevity chuyển về nguồn thay
+// vì để Robot Personality tự nén ở lớp sau, xem robot-agent.ts mergeResults()).
+const WORK_STATUS_DETAIL_PHRASES = ["chi tiết", "đầy đủ", "cụ thể", "kể hết", "nói rõ", "nói kỹ"];
+
+function wantsWorkStatusDetail(message: string): boolean {
+  const lower = message.toLowerCase();
+  return WORK_STATUS_DETAIL_PHRASES.some((p) => lower.includes(p));
+}
+
 // intent "work_status" — trả lời từ continuity record THẬT (Phase 6B, xem
 // src/lib/project/continuity.ts) + todos chưa xong của dự án sáng tạo đang mở
 // (nếu có) — KHÔNG đoán bừa, KHÔNG gọi model (nội dung đã có sẵn, chỉ cần
 // Robot Personality diễn đạt lại giọng Chuối ở lớp sau).
-async function handleWorkStatus(ctx: ExecutionContext): Promise<IntentOutcome> {
+//
+// Mặc định CHỈ trả đúng "đang làm gì" — 1 câu, đúng câu hỏi "làm đến đâu rồi"
+// đang thực sự hỏi. Bản ĐẦY ĐỦ (phase/vừa xong/tiếp theo/vướng/todos) — hành
+// vi CŨ, vẫn giữ nguyên y hệt — chỉ trả khi người dùng hỏi thẳng muốn chi tiết
+// (wantsWorkStatusDetail), không bị mất thông tin, chỉ không dồn hết vào mặc định.
+async function handleWorkStatus(ctx: ExecutionContext, message: string): Promise<IntentOutcome> {
   const continuity = await getContinuity();
   const activeProject = continuity.activeProjectId ? await getProjectById(continuity.activeProjectId) : null;
   const unfinishedTodos = activeProject?.todos.filter((t) => !t.done) ?? [];
@@ -305,6 +320,16 @@ async function handleWorkStatus(ctx: ExecutionContext): Promise<IntentOutcome> {
     entity_id: ctx.id,
     payload: { phase: continuity.currentPhase, activeProjectId: continuity.activeProjectId, unfinishedTodoCount: unfinishedTodos.length },
   });
+
+  if (!wantsWorkStatusDetail(message)) {
+    return {
+      reply: continuity.currentTask || continuity.currentPhase,
+      memoryUsed: 0,
+      knowledgeUsed: 0,
+      memoryWritten: false,
+      meta: { subtype: "continuity" },
+    };
+  }
 
   const reply = [
     `Phase hiện tại: ${continuity.currentPhase}.`,
@@ -319,7 +344,7 @@ async function handleWorkStatus(ctx: ExecutionContext): Promise<IntentOutcome> {
     .filter(Boolean)
     .join(" ");
 
-  return { reply, memoryUsed: 0, knowledgeUsed: 0, memoryWritten: false, meta: { subtype: "continuity" } };
+  return { reply, memoryUsed: 0, knowledgeUsed: 0, memoryWritten: false, meta: { subtype: "continuity_detail" } };
 }
 
 // intent "voice_request" — giao cho Task Orchestrator (Agent Runtime), cùng
@@ -463,7 +488,7 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
     case "forget_memory":
       return handleForgetMemory(ctx);
     case "work_status":
-      return handleWorkStatus(ctx);
+      return handleWorkStatus(ctx, message);
     case "voice_request":
       return handleVoiceRequest(message);
     case "robot_command":

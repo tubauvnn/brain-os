@@ -159,8 +159,15 @@ async function mergeResults(
   // Hướng dẫn merge (mục 5) gắn vào `context` của LƯỢT GỌI NÀY thôi — KHÔNG
   // sửa system prompt dùng chung của ModelRouter (src/lib/model/providers/
   // openai.ts, các client khác ngoài robot cũng dùng chung, không được đụng).
+  //
+  // NGẮN GỌN xử lý Ở ĐÂY (2026-07-11) — chỗ SỚM NHẤT sinh ra nội dung thô cho
+  // nhánh chat của robot. TRƯỚC đây độ dài bị ép ở personality.ts (lớp PHONG
+  // CÁCH, chạy SAU) — model vừa phải nén nội dung dài vừa phải đổi giọng cùng
+  // lúc, không đáng tin cậy (nguồn càng dài càng dễ bỏ qua chỉ dẫn độ dài).
+  // Personality giờ CHỈ đổi giọng, TIN TƯỞNG reply gốc đã đủ ngắn từ đây —
+  // không nén lại lần 2.
   const contextText = [
-    "Nếu có nhiều nguồn thông tin bên dưới, tổng hợp thành 1 câu trả lời mạch lạc, không lặp lại ý trùng nhau. Nếu 2 nguồn mâu thuẫn, ưu tiên nguồn chắc chắn hơn (quan sát trực tiếp > trí nhớ > suy luận chung) và nói rõ nếu có phần không chắc.",
+    "Trả lời TRỰC TIẾP câu hỏi trước tiên — không rào đón, không liệt kê hết mọi nguồn thông tin bên dưới, không lặp lại ngữ cảnh đã biết. Mặc định 8-20 từ, TỐI ĐA 2 câu ngắn — CHỈ dài hơn khi người dùng RÕ RÀNG yêu cầu giải thích/chi tiết thêm. Nếu nhiều nguồn bên dưới đều liên quan, chỉ chọn ĐÚNG phần liên quan trực tiếp nhất tới câu hỏi, bỏ qua phần còn lại — không cố tổng hợp hết. Nếu 2 nguồn mâu thuẫn, ưu tiên nguồn chắc chắn hơn (quan sát trực tiếp > trí nhớ > suy luận chung) và nói rõ nếu có phần không chắc.",
     historyText ? `Lịch sử hội thoại gần đây:\n${historyText}` : "",
     ...orderedTexts,
   ]
