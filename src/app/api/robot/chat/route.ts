@@ -9,6 +9,7 @@ import { toJsonValue } from "@/lib/json";
 import { runConversationAgent } from "@/lib/agent/conversation-agent";
 import { checkLanguageGuard } from "@/lib/robot-ai/language-guard";
 import { deriveRobotPresentation, type RobotPresentation } from "@/lib/robot-ai/presentation";
+import { applyRobotPersonality } from "@/lib/robot-ai/personality";
 import type { RobotChatResult, RobotProvider } from "@/lib/robot-ai/types";
 
 // Phase 6A — /robot không còn tự trả lời qua local-skills.ts/demo-scenarios.ts
@@ -17,13 +18,17 @@ import type { RobotChatResult, RobotProvider } from "@/lib/robot-ai/types";
 //
 //   Robot UI → route này → Conversation Agent → Intent Resolver →
 //   (Memory/Knowledge/Project Context cho chat, hoặc Task Orchestrator →
-//   Robot Agent → Device Manager cho lệnh robot) → ConversationResult
+//   Robot Agent → Device Manager cho lệnh robot) → ConversationResult →
+//   Robot Personality (giọng Chuối, xem robot-ai/personality.ts) → VoiceAgent
 //
 // Route CHỈ làm: validate input, chặn rác STT (language guard, không phải nội
 // dung bịa), gọi Conversation Agent, dịch ConversationResult sang
 // mood/action/eyes/mouth cho UI (deriveRobotPresentation — thuần presentation,
-// không tạo nội dung trả lời), và lưu lịch sử hội thoại (ConversationMessage,
-// dùng lại bởi chính Conversation Agent cho lượt hỏi tiếp theo trong cùng session).
+// không tạo nội dung trả lời), CHO CÂU TRẢ LỜI ĐI QUA Robot Personality trước
+// khi trả về (field `reply` cuối cùng LUÔN đã qua lớp này — client chỉ đọc
+// đúng field này để gửi sang VoiceAgent/ElevenLabs, không có đường nào khác),
+// và lưu lịch sử hội thoại (ConversationMessage, dùng lại bởi chính
+// Conversation Agent cho lượt hỏi tiếp theo trong cùng session).
 
 const ChatSchema = z.object({
   message: z.string().min(1).max(2000).optional(),
@@ -103,7 +108,7 @@ export async function POST(req: NextRequest) {
     const agentResult = guarded ? null : await runConversationAgent({ message: userText, source: "robot", sessionId: sessionId ?? undefined });
     const latencyMs = Date.now() - startedAt;
 
-    const reply = guarded ? guarded.reply : agentResult?.reply ?? FALLBACK_TEXT;
+    const rawReply = guarded ? guarded.reply : agentResult?.reply ?? FALLBACK_TEXT;
     const intent = guarded ? "unknown" : agentResult?.intent ?? "unknown";
     const usedModel = !guarded && !!agentResult?.model;
     const presentation: RobotPresentation = guarded
@@ -117,6 +122,19 @@ export async function POST(req: NextRequest) {
       : deriveRobotPresentation(intent, agentResult ?? { success: false, error: "Không gọi được Conversation Agent." });
     const provider: RobotProvider = guarded ? "local" : agentResult?.success ? resolveProviderLabel(usedModel) : "fallback";
     const errorText = guarded ? undefined : agentResult?.success ? undefined : agentResult?.error ?? "Xử lý thất bại.";
+
+    // Robot Personality — LUÔN chạy trước khi trả lời (trừ language guard,
+    // vốn đã là 1 câu cố định đúng giọng, viết tay riêng cho đúng tình huống
+    // "nghe không rõ script lạ"). Chỉ đổi cách nói, không đổi sự thật — xem
+    // src/lib/robot-ai/personality.ts.
+    const reply = guarded
+      ? rawReply
+      : await applyRobotPersonality(rawReply, {
+          userText,
+          intent,
+          command: typeof agentResult?.meta?.command === "string" ? agentResult.meta.command : undefined,
+          success: agentResult?.success ?? false,
+        });
 
     let userMessageId: string | undefined;
     try {
@@ -153,6 +171,7 @@ export async function POST(req: NextRequest) {
           provider,
           metadata: toJsonValue({
             intent,
+            rawReply: rawReply !== reply ? rawReply : undefined,
             mood: presentation.mood,
             action: presentation.action,
             eyes: presentation.eyes,
@@ -190,6 +209,7 @@ export async function POST(req: NextRequest) {
       provider,
       model: agentResult?.model,
       reply,
+      rawReply: rawReply !== reply ? rawReply : undefined,
       mood: presentation.mood,
       action: presentation.action,
       eyes: presentation.eyes,
