@@ -2,6 +2,8 @@ export type Intent =
   | "chat"
   | "remember"
   | "recall_memory"
+  | "forget_memory"
+  | "work_status"
   | "robot_command"
   | "voice_request"
   | "video_request"
@@ -23,7 +25,9 @@ export type Intent =
 // vertical slice này. Nâng cấp lên model-based classification là bước sau,
 // ngoài phạm vi hiện tại.
 
-const REMEMBER_PHRASES = ["nhớ rằng", "ghi nhớ", "nhớ giúp", "remember that", "please remember"];
+// "lưu lại"/"từ giờ" thêm cho Phase 6B (mục 4 — 4 cụm xác nhận ghi nhớ:
+// "nhớ rằng"/"lưu lại"/"từ giờ"/"quên việc", cụm cuối là forget_memory bên dưới).
+const REMEMBER_PHRASES = ["nhớ rằng", "ghi nhớ", "nhớ giúp", "lưu lại", "từ giờ", "remember that", "please remember"];
 
 // "mày nhớ" đứng RIÊNG ở recall (không phải remember) — câu thật tế hay dùng
 // dạng câu hỏi "mày nhớ ... không?" (Phase 6A robot verify: "Mày nhớ tao đang
@@ -37,6 +41,34 @@ const RECALL_MEMORY_PHRASES = [
   "what did i say about",
   "mày có nhớ",
   "mày nhớ",
+];
+
+// forget_memory — Phase 6B mục 4 ("quên việc…") + mục 12 test F ("Quên thông
+// tin vừa lưu."). Xét TRƯỚC robot_command/chat, cùng nhóm với remember/
+// recall_memory. Phạm vi: LUÔN xoá memory GẦN NHẤT vừa lưu (xem
+// handleForgetMemory trong conversation-agent.ts) — không xoá hàng loạt theo
+// lệnh mơ hồ.
+// Cố tình KHÔNG có "quên đi" đơn lẻ — quá chung chung trong tiếng Việt đời
+// thường ("thôi quên đi" = bỏ qua chuyện đó, không liên quan tới memory), xoá
+// là hành động PHÁ HUỶ nên chỉ khớp cụm rõ ràng nói tới "thông tin"/"trí nhớ"/"việc".
+const FORGET_MEMORY_PHRASES = ["quên thông tin", "quên việc", "quên trí nhớ", "xoá trí nhớ", "xóa trí nhớ", "forget that"];
+
+// work_status — Phase 6B mục 5/8 (liên tục công việc: phase hiện tại, việc
+// dang dở, việc tiếp theo, "hôm qua đang làm gì"). Trả lời từ continuity
+// record thật (src/lib/project/continuity.ts), không đoán bừa.
+const WORK_STATUS_PHRASES = [
+  "hôm qua",
+  "đang làm gì",
+  "làm đến đâu",
+  "làm tới đâu",
+  "còn dang dở",
+  "dở dang",
+  "tiếp tục việc",
+  "việc tiếp theo",
+  "đang ở phase",
+  "phase nào",
+  "trạng thái công việc",
+  "vướng mắc gì",
 ];
 
 // robot_command đòi hỏi cả 2: có từ "robot" VÀ 1 động từ hành động — tránh khớp
@@ -104,8 +136,10 @@ export function resolveIntent(message: string): Intent {
   const text = message.trim().toLowerCase();
   if (!text || !hasAlpha(text)) return "unknown";
 
+  if (includesAny(text, FORGET_MEMORY_PHRASES)) return "forget_memory";
   if (includesAny(text, REMEMBER_PHRASES)) return "remember";
   if (includesAny(text, RECALL_MEMORY_PHRASES)) return "recall_memory";
+  if (includesAny(text, WORK_STATUS_PHRASES)) return "work_status";
   if (isRobotCommand(text)) return "robot_command";
   if (includesAny(text, PROJECT_REQUEST_PHRASES)) return "project_request";
   if (includesAny(text, IMAGE_REQUEST_PHRASES)) return "image_request";

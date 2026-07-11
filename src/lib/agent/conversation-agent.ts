@@ -1,10 +1,11 @@
 import { randomUUID } from "crypto";
 import { log } from "@/lib/logger";
-import { recallMemory, writeMemory } from "@/lib/memory";
+import { recallMemory, getMostRecentMemory, deleteMemory, rememberIfSafe } from "@/lib/memory";
 import { recallKnowledge } from "@/lib/knowledge";
 import { ModelRouter, DEFAULT_MODEL_PROVIDER } from "@/lib/model";
 import { TaskOrchestrator } from "@/lib/orchestrator";
-import { getActiveProjectContext } from "@/lib/project";
+import { getActiveProjectContext, getContinuity, getProjectById } from "@/lib/project";
+import { getOwnerContext, findMentionedPeople } from "@/lib/people";
 import { loadSessionHistoryText } from "@/lib/brain/session-context";
 import { resolveIntent, type Intent } from "./intent-resolver";
 import type { ConversationInput, ConversationResult, ExecutionContext } from "./types";
@@ -44,13 +45,17 @@ function createExecutionContext(input: ConversationInput): ExecutionContext {
 // sử hội thoại trong cùng session (nếu client gửi sessionId, xem
 // src/lib/brain/session-context.ts) — cần để trả lời được các câu hỏi kiểu
 // "mày nhớ tao đang làm gì không?" bằng ngữ cảnh THẬT, không đoán bừa.
+// Phase 6B — recallMemory(message) giờ CHỈ lấy memory liên quan tới câu hỏi
+// hiện tại (không dump cả bảng vào prompt, xem src/lib/memory/index.ts), và
+// thêm relationship memory (People, xem src/lib/people/) cho người được nhắc
+// tới trong câu — cả 2 đều "chỉ lấy cái liên quan", không bơm toàn bộ DB.
 async function handleChat(ctx: ExecutionContext, message: string): Promise<IntentOutcome> {
-  const memory = await recallMemory();
+  const memory = await recallMemory(message);
   await log({
     action: "memory.read",
     entity: "ExecutionContext",
     entity_id: ctx.id,
-    payload: { count: memory.items.length },
+    payload: { count: memory.items.length, relevanceFiltered: true },
   });
 
   const knowledge = await recallKnowledge();
@@ -63,14 +68,20 @@ async function handleChat(ctx: ExecutionContext, message: string): Promise<Inten
 
   const projectContext = await getActiveProjectContext();
   const historyText = ctx.sessionId ? await loadSessionHistoryText(ctx.sessionId) : "";
+  const mentionedPeople = await findMentionedPeople(message);
 
   const contextText = [
     projectContext ? `Dự án đang mở: ${projectContext.name}${projectContext.storyBible ? `\n${projectContext.storyBible}` : ""}` : "",
     memory.items.length
-      ? `Memory:\n${memory.items.map((m) => `- ${m.title}: ${m.content}`).join("\n")}`
+      ? `Memory liên quan:\n${memory.items.map((m) => `- ${m.title}: ${m.content}`).join("\n")}`
       : "",
     knowledge.items.length
       ? `Knowledge:\n${knowledge.items.map((k) => `- ${k.summary}`).join("\n")}`
+      : "",
+    mentionedPeople.length
+      ? `Người được nhắc tới:\n${mentionedPeople
+          .map((p) => `- ${p.name}${p.alias ? ` (${p.alias})` : ""}: quan hệ ${p.relation ?? "chưa rõ"}${p.notes ? `, ghi chú: ${p.notes}` : ""}`)
+          .join("\n")}`
       : "",
     historyText ? `Lịch sử hội thoại gần đây (session hiện tại):\n${historyText}` : "",
   ]
@@ -113,40 +124,174 @@ async function handleChat(ctx: ExecutionContext, message: string): Promise<Inten
   };
 }
 
-// intent "remember" — ghi thẳng, không gọi model.
+// Cụm kích hoạt "remember" (đồng bộ REMEMBER_PHRASES trong intent-resolver.ts)
+// — bóc ra khỏi câu trước khi lưu để Memory.content sạch, không lặp lại
+// nguyên văn lệnh ("nhớ rằng tao thích X" → lưu "tao thích X", không lưu cả câu).
+const REMEMBER_TRIGGER_PHRASES = ["nhớ rằng", "ghi nhớ giúp tôi", "ghi nhớ giúp", "ghi nhớ", "nhớ giúp", "lưu lại", "từ giờ"];
+
+function stripRememberTrigger(text: string): string {
+  const lower = text.toLowerCase();
+  for (const phrase of REMEMBER_TRIGGER_PHRASES) {
+    const idx = lower.indexOf(phrase);
+    if (idx !== -1) {
+      const rest = text.slice(idx + phrase.length).trim().replace(/^[:\-–,]\s*/, "");
+      if (rest) return rest;
+    }
+  }
+  return text.trim();
+}
+
+// intent "remember" — ghi thẳng, không gọi model. Chính sách "chặn secret /
+// phân loại preference-vs-fact / chống ghi trùng" nằm trong rememberIfSafe()
+// (src/lib/memory/index.ts) — DÙNG CHUNG với /api/robot/memory/remember,
+// không lặp lại 2 nơi. meta.subtype ("refused"/"duplicate"/"written") cho
+// Robot Personality chọn đúng câu xác nhận (xem robot-ai/personality.ts).
 async function handleRemember(ctx: ExecutionContext, message: string): Promise<IntentOutcome> {
-  const content = message.trim();
-  await writeMemory(content, `conversation-agent:${ctx.source}:${ctx.id}`);
+  const content = stripRememberTrigger(message.trim());
+  const outcome = await rememberIfSafe(content, `conversation-agent:${ctx.source}:${ctx.id}`);
+
+  if (outcome.status === "refused") {
+    await log({ action: "memory.write.refused", entity: "ExecutionContext", entity_id: ctx.id, payload: { reason: "looks_like_secret" } });
+    return {
+      reply: "Nội dung này giống thông tin nhạy cảm nên mình không lưu lại.",
+      memoryUsed: 0,
+      knowledgeUsed: 0,
+      memoryWritten: false,
+      meta: { subtype: "refused" },
+    };
+  }
+
+  const deduped = outcome.status === "duplicate";
   await log({
-    action: "memory.write",
+    action: deduped ? "memory.write.duplicate" : "memory.write",
     entity: "ExecutionContext",
     entity_id: ctx.id,
-    payload: { source: ctx.source },
+    payload: { source: ctx.source, category: outcome.category, memoryId: outcome.item.id, deduped },
   });
 
   return {
-    reply: `Đã ghi nhớ: ${content}`,
+    reply: deduped ? `Mình đã nhớ điều này từ trước rồi: ${outcome.item.content}` : `Đã ghi nhớ: ${outcome.item.content}`,
     memoryUsed: 0,
     knowledgeUsed: 0,
-    memoryWritten: true,
+    memoryWritten: !deduped,
+    meta: { subtype: deduped ? "duplicate" : "written", memoryId: outcome.item.id, category: outcome.category },
   };
 }
 
-// intent "recall_memory" — đọc thẳng, không gọi model.
-async function handleRecallMemory(ctx: ExecutionContext): Promise<IntentOutcome> {
-  const memory = await recallMemory();
+// Câu hỏi về DANH TÍNH người dùng ("tao/tôi/mình là ai") — trả lời từ Profile
+// thật (chủ hệ thống), KHÔNG dump Memory chung chung. Khác "mày là ai" (hỏi
+// về ROBOT — đi qua intent "chat" bình thường, robot tự giới thiệu).
+const IDENTITY_SELF_PHRASES = ["tao là ai", "tôi là ai", "mình là ai"];
+
+// "vừa bảo/nói/nhớ/lưu/dặn" — hỏi về ĐÚNG 1 memory vừa ghi gần nhất (test E
+// Phase 6B: "Tao vừa bảo mày nhớ gì?"), khác câu hỏi nhớ chung chung.
+const JUST_TOLD_PHRASES = ["vừa bảo", "vừa nói", "vừa nhớ", "vừa lưu", "vừa dặn"];
+
+// intent "recall_memory" — đọc thẳng, không gọi model. Phase 6B: 3 nhánh —
+// (1) hỏi danh tính → Profile, (2) hỏi "vừa nhớ gì" → đúng 1 memory gần nhất,
+// (3) còn lại → recallMemory(message) CHỈ lấy memory liên quan câu hỏi (xem
+// src/lib/memory/index.ts), không dump cả bảng như trước Phase 6B.
+async function handleRecallMemory(ctx: ExecutionContext, message: string): Promise<IntentOutcome> {
+  const lower = message.trim().toLowerCase();
+
+  if (IDENTITY_SELF_PHRASES.some((p) => lower.includes(p))) {
+    const owner = await getOwnerContext();
+    await log({ action: "memory.read", entity: "ExecutionContext", entity_id: ctx.id, payload: { source: "profile", found: !!owner } });
+    const reply = owner
+      ? `Bạn là ${owner.name}${owner.alias ? `, mình hay gọi là ${owner.alias}` : ""}.`
+      : "Mình chưa có hồ sơ nào về bạn cả.";
+    return { reply, memoryUsed: owner ? 1 : 0, knowledgeUsed: 0, memoryWritten: false, meta: { subtype: "identity" } };
+  }
+
+  if (JUST_TOLD_PHRASES.some((p) => lower.includes(p))) {
+    const latest = await getMostRecentMemory();
+    await log({ action: "memory.read", entity: "ExecutionContext", entity_id: ctx.id, payload: { source: "latest", found: !!latest } });
+    const reply = latest ? `Lần gần nhất bạn bảo mình nhớ: ${latest.content}` : "Gần đây bạn chưa bảo mình nhớ gì cả.";
+    return { reply, memoryUsed: latest ? 1 : 0, knowledgeUsed: 0, memoryWritten: false, meta: { subtype: "latest" } };
+  }
+
+  const memory = await recallMemory(message);
   await log({
     action: "memory.read",
     entity: "ExecutionContext",
     entity_id: ctx.id,
-    payload: { count: memory.items.length },
+    payload: { count: memory.items.length, source: "relevance" },
   });
 
   const reply = memory.items.length
-    ? `Đây là những gì mình nhớ:\n${memory.items.map((m) => `- ${m.title}: ${m.content}`).join("\n")}`
+    ? `Đây là những gì mình nhớ liên quan:\n${memory.items.map((m) => `- ${m.title}: ${m.content}`).join("\n")}`
     : "Mình chưa có memory nào liên quan để nhớ lại.";
 
-  return { reply, memoryUsed: memory.items.length, knowledgeUsed: 0, memoryWritten: false };
+  return { reply, memoryUsed: memory.items.length, knowledgeUsed: 0, memoryWritten: false, meta: { subtype: "relevant" } };
+}
+
+// intent "forget_memory" — xoá THẲNG memory vừa lưu gần nhất (không xoá hàng
+// loạt theo lệnh mơ hồ — xem comment FORGET_MEMORY_PHRASES trong
+// intent-resolver.ts). Luôn xác nhận rõ đã quên CÁI GÌ, không im lặng xoá.
+async function handleForgetMemory(ctx: ExecutionContext): Promise<IntentOutcome> {
+  const latest = await getMostRecentMemory();
+  if (!latest) {
+    await log({ action: "memory.delete.empty", entity: "ExecutionContext", entity_id: ctx.id, payload: {} });
+    return {
+      reply: "Hiện chưa có gì để quên cả, trí nhớ đang trống.",
+      memoryUsed: 0,
+      knowledgeUsed: 0,
+      memoryWritten: false,
+      meta: { subtype: "empty" },
+    };
+  }
+
+  const deleted = await deleteMemory(latest.id);
+  await log({
+    action: "memory.delete",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { memoryId: latest.id, title: latest.title, success: !!deleted },
+  });
+
+  // KHÔNG set `error` ở đây dù deleteMemory() trả null — runConversationAgent
+  // coi outcome.error là LỖI CỨNG và VỨT BỎ luôn `reply` (xem cuối file), mà
+  // ở đây đã có sẵn câu trả lời trung thực giải thích tình huống rồi, không
+  // cần rơi xuống FALLBACK_TEXT chung chung.
+  return {
+    reply: deleted ? `Đã quên: ${deleted.title}` : "Mình không xoá được, thử lại giúp mình nhé.",
+    memoryUsed: 0,
+    knowledgeUsed: 0,
+    memoryWritten: false,
+    meta: deleted ? { subtype: "deleted", detail: deleted.title, deletedMemoryId: deleted.id } : { subtype: "delete_failed" },
+  };
+}
+
+// intent "work_status" — trả lời từ continuity record THẬT (Phase 6B, xem
+// src/lib/project/continuity.ts) + todos chưa xong của dự án sáng tạo đang mở
+// (nếu có) — KHÔNG đoán bừa, KHÔNG gọi model (nội dung đã có sẵn, chỉ cần
+// Robot Personality diễn đạt lại giọng Chuối ở lớp sau).
+async function handleWorkStatus(ctx: ExecutionContext): Promise<IntentOutcome> {
+  const continuity = await getContinuity();
+  const activeProject = continuity.activeProjectId ? await getProjectById(continuity.activeProjectId) : null;
+  const unfinishedTodos = activeProject?.todos.filter((t) => !t.done) ?? [];
+
+  await log({
+    action: "continuity.read",
+    entity: "ExecutionContext",
+    entity_id: ctx.id,
+    payload: { phase: continuity.currentPhase, activeProjectId: continuity.activeProjectId, unfinishedTodoCount: unfinishedTodos.length },
+  });
+
+  const reply = [
+    `Phase hiện tại: ${continuity.currentPhase}.`,
+    `Vừa hoàn thành: ${continuity.lastCompletedAction}.`,
+    `Đang làm: ${continuity.currentTask}.`,
+    `Việc tiếp theo: ${continuity.nextRecommendedAction}.`,
+    continuity.blockedBy.length ? `Đang vướng: ${continuity.blockedBy.join(", ")}.` : "Hiện chưa có vướng mắc.",
+    unfinishedTodos.length && activeProject
+      ? `Việc dang dở trong dự án ${activeProject.metadata.name}: ${unfinishedTodos.map((t) => t.content).join(", ")}.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return { reply, memoryUsed: 0, knowledgeUsed: 0, memoryWritten: false, meta: { subtype: "continuity" } };
 }
 
 // intent "voice_request" — giao cho Task Orchestrator (Agent Runtime), cùng
@@ -286,7 +431,11 @@ async function routeByIntent(ctx: ExecutionContext, intent: Intent, message: str
     case "remember":
       return handleRemember(ctx, message);
     case "recall_memory":
-      return handleRecallMemory(ctx);
+      return handleRecallMemory(ctx, message);
+    case "forget_memory":
+      return handleForgetMemory(ctx);
+    case "work_status":
+      return handleWorkStatus(ctx);
     case "voice_request":
       return handleVoiceRequest(message);
     case "robot_command":

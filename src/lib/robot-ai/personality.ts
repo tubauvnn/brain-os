@@ -30,6 +30,10 @@ export type PersonalityContext = {
   intent: Intent;
   /** meta.command từ robot_command (xem robot-task-agent.ts), nếu có. */
   command?: string;
+  /** meta.subtype — phân biệt các nhánh trong 1 intent (vd remember: written/duplicate/refused). */
+  subtype?: string;
+  /** meta.detail — nội dung cụ thể cần chèn vào template (vd tiêu đề memory vừa quên). */
+  detail?: string;
   success: boolean;
 };
 
@@ -50,17 +54,33 @@ const ROBOT_COMMAND_TEMPLATES: Record<string, string> = {
   speak: "Tôi nói xong câu đó rồi đây.",
 };
 
-const REMEMBER_TEMPLATE = "Ghi rồi nhé, tôi nhớ giúp bạn.";
+const REMEMBER_WRITTEN_TEMPLATE = "Ghi rồi nhé, tôi nhớ giúp bạn.";
+const REMEMBER_DUPLICATE_TEMPLATE = "Cái này tôi nhớ từ trước rồi, khỏi lo, tôi không quên đâu.";
+const REMEMBER_REFUSED_TEMPLATE = "Cái này nhạy cảm quá, tôi không lưu lại đâu nhé.";
+const FORGET_EMPTY_TEMPLATE = "Chưa có gì để quên cả, trí nhớ đang trống.";
 const UNKNOWN_TEMPLATE = "Tôi chưa hiểu ý bạn lắm, nói lại giúp tôi với nhé.";
 const ERROR_TEMPLATE = "Tôi hơi khựng một chút, thử lại giúp tôi nhé.";
 
+// robot_command/remember/forget_memory/unknown/lỗi hệ thống — tập lệnh cố
+// định, viết tay theo giọng Chuối, không gọi model. work_status/recall_memory/
+// chat trả null ở đây → rơi xuống rewriteWithModel() (nội dung tự do, độ dài
+// thay đổi, không viết sẵn hết được).
 function deterministicReply(ctx: PersonalityContext): string | null {
   if (!ctx.success) return ERROR_TEMPLATE;
   if (ctx.intent === "robot_command") {
     if (ctx.command && ROBOT_COMMAND_TEMPLATES[ctx.command]) return ROBOT_COMMAND_TEMPLATES[ctx.command];
     return `Lệnh "${ctx.command ?? ctx.userText}" tôi chưa làm được. Bạn thử lệnh khác giúp tôi nhé.`;
   }
-  if (ctx.intent === "remember") return REMEMBER_TEMPLATE;
+  if (ctx.intent === "remember") {
+    if (ctx.subtype === "refused") return REMEMBER_REFUSED_TEMPLATE;
+    if (ctx.subtype === "duplicate") return REMEMBER_DUPLICATE_TEMPLATE;
+    return REMEMBER_WRITTEN_TEMPLATE;
+  }
+  if (ctx.intent === "forget_memory") {
+    if (ctx.subtype === "empty") return FORGET_EMPTY_TEMPLATE;
+    if (ctx.subtype === "delete_failed") return ERROR_TEMPLATE;
+    return ctx.detail ? `Đã quên "${ctx.detail}" rồi nhé.` : "Đã quên xong rồi nhé.";
+  }
   if (ctx.intent === "unknown") return UNKNOWN_TEMPLATE;
   return null;
 }

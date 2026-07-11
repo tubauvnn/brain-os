@@ -93,9 +93,13 @@ export function deriveRobotPresentation(
     case "robot_command":
       return presentRobotCommand(result.meta);
     case "remember":
-      return { mood: "happy", action: "none", eyes: "center", mouth: "speaking", brainNote: "memory.write" };
+      return { mood: "happy", action: "none", eyes: "center", mouth: "speaking", brainNote: `memory.write:${result.meta?.subtype ?? "written"}` };
     case "recall_memory":
-      return { mood: "thinking", action: "none", eyes: "center", mouth: "speaking", brainNote: "memory.read" };
+      return { mood: "thinking", action: "none", eyes: "center", mouth: "speaking", brainNote: `memory.read:${result.meta?.subtype ?? "relevant"}` };
+    case "forget_memory":
+      return { mood: "idle", action: "none", eyes: "center", mouth: "speaking", brainNote: `memory.delete:${result.meta?.subtype ?? "deleted"}` };
+    case "work_status":
+      return { mood: "thinking", action: "none", eyes: "center", mouth: "speaking", brainNote: "continuity.read" };
     case "unknown":
       return { mood: "idle", action: "none", eyes: "center", mouth: "idle", brainNote: "unknown intent" };
     case "chat":

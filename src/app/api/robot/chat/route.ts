@@ -133,6 +133,8 @@ export async function POST(req: NextRequest) {
           userText,
           intent,
           command: typeof agentResult?.meta?.command === "string" ? agentResult.meta.command : undefined,
+          subtype: typeof agentResult?.meta?.subtype === "string" ? agentResult.meta.subtype : undefined,
+          detail: typeof agentResult?.meta?.detail === "string" ? agentResult.meta.detail : undefined,
           success: agentResult?.success ?? false,
         });
 
