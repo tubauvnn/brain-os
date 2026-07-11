@@ -33,6 +33,14 @@ const MOOD_FACE_PARAMS: Record<SocialMood, Omit<SocialMoodResult, "mood">> = {
   listening: { faceState: "listening", fastBlink: false, gesture: null, speakingRate: 1.0, greetingStyle: "warm" },
 };
 
+// Tra bảng tham số mặt/blink/đầu/tốc độ nói cho 1 SocialMood đã biết trước
+// (không cần tính lại resolveMood()) — Phase 6G's ActionPlanner chỉ giữ lại
+// `mood` (id) trên PlannedAction, không giữ cả SocialMoodResult đầy đủ, nên
+// executor (page.tsx) cần hàm này để lấy lại đúng bộ tham số khi áp lên UI.
+export function moodFaceParams(mood: SocialMood): Omit<SocialMoodResult, "mood"> {
+  return MOOD_FACE_PARAMS[mood];
+}
+
 export class MoodEngine {
   compute(input: MoodEngineInput): SocialMoodResult {
     const mood = this.resolveMood(input);

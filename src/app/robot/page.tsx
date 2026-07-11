@@ -7,8 +7,10 @@ import { Badge } from "@/components/ui/Badge";
 import { RobotFaceKiosk, type RobotFaceState, type RobotGesture } from "@/components/robot/RobotFaceKiosk";
 import { PresenceDetector } from "@/components/robot/PresenceDetector";
 import type { PresenceFrame } from "@/lib/robot/presence-types";
-import { SocialBrain } from "@/lib/robot/social/social-brain";
-import type { SocialAction, SocialBrainContext, SocialMoodResult } from "@/lib/robot/social/types";
+import { BrainLoop } from "@/lib/robot/brain/brain-loop";
+import type { BrainCycleResult, BrainLoopInputs, ConversationState, VisualHint } from "@/lib/robot/brain/types";
+import { moodFaceParams } from "@/lib/robot/social/mood-engine";
+import type { SocialMood } from "@/lib/robot/social/types";
 import type { RobotMood } from "@/lib/robot-ai/types";
 
 // Bản reset (2026-07-08) — 1 màn demo sạch: mặt robot + 6 nút demo + chat gọn.
@@ -38,19 +40,31 @@ import type { RobotMood } from "@/lib/robot-ai/types";
 // mặc định (bấm nút "Presence" mới xin quyền).
 //
 // Phase 6F (2026-07-11) — Social Brain: SocialBrain (src/lib/robot/social/,
-// thuần logic không đụng DOM) là nơi DUY NHẤT quyết định hành vi xã giao từ
-// PresenceFrame — gộp MoodEngine (9 mood, mỗi hành động đều mang theo),
-// AttentionEngine (currentTarget/attentionScore, luật bậc thời gian nhìn:
-// 2-3s "look", 5s chào, 10s mời — mỗi bậc CHỈ 1 LẦN cho 1 người, không lặp
-// lại), ConversationMemory (nhớ khách vãng lai ~30 phút, luôn nói giọng
-// phỏng đoán) và HumorEngine (câu chào/đùa/tạm biệt/bán hàng xoay vòng,
-// không lặp liền nhau — KHÔNG gọi AI provider nào). Idle behaviors
-// (blink/look/smile/breathe mỗi 15-30s) vẫn chạy dù camera presence tắt;
-// SocialBrain tự khoá lại (không đổi target/không nói gì) suốt lúc robot
-// đang nghe/nghĩ/nói chuyện thật (mục 3 "never interrupt"). Không đụng Vision
-// provider/Conversation Agent/Device Manager/ESP32 — mỗi SocialAction vẫn
-// POST best-effort qua /api/robot/event (event_type "social.<kind>") như
-// Phase 6E, cùng 1 điểm vào cho DeviceManager thật sau này.
+// thuần logic không đụng DOM) gộp MoodEngine (9 mood), AttentionEngine
+// (currentTarget/attentionScore, luật bậc thời gian nhìn: 2-3s "look", 5s
+// chào, 10s mời — mỗi bậc CHỈ 1 LẦN cho 1 người), ConversationMemory (nhớ
+// khách vãng lai ~30 phút, luôn nói giọng phỏng đoán) và HumorEngine (câu
+// chào/đùa/tạm biệt/bán hàng xoay vòng — KHÔNG gọi AI provider nào).
+//
+// Phase 6G (2026-07-11) — Brain Loop: robot chủ động thật sự, không chỉ chờ
+// sự kiện. BrainLoop (src/lib/robot/brain/, thuần logic) chạy vòng lặp
+// Observe→Think→Prioritize→Plan mỗi 200ms (page.tsx chỉ còn việc Execute —
+// áp PlannedAction lên UI/giọng nói): Observe gom WorldState mới nhất
+// (presence/conversation/mood từ SocialBrain — SocialBrain giờ SỐNG BÊN
+// TRONG BrainLoop, page.tsx không giữ ref riêng nữa — + project/camera/thời
+// gian rảnh); Think (GoalEngine) chọn 1 trong 9 goal (Idle/Greeting/
+// Conversation/Selling/Watching/Thinking/Listening/Waiting/Sleeping), mỗi
+// goal có priority/interruptible/timeout/completion condition riêng;
+// Prioritize (PriorityEngine) quyết định có chuyển goal hay không — ưu tiên
+// cao hơn luôn thắng, "never interrupt" hội thoại thật; Plan (ActionPlanner)
+// luôn ra ĐÚNG 1 action trong 15 action cố định (LookLeft/LookRight/
+// LookAtPerson/Blink/Smile/Wave/Speak/StaySilent/Wait/StartConversation/
+// ContinueConversation/EndConversation/Invite/ReturnIdle/Sleep) — SocialAction
+// từ SocialBrain luôn có thẩm quyền cao nhất khi có, Scheduler (mốc 3s/8s/
+// 15s/30s/60s) chỉ là lớp idle-ambience/lưới an toàn phía dưới. Thêm 1 lớp
+// cooldown TOÀN CỤC mới (chào 60s/mời 90s/đùa-hoặc-câu-bán-hàng-y-hệt 5
+// phút — "never spam", KHÁC cooldown per-target đã có của AttentionEngine).
+// Không đụng Vision provider/Conversation Agent/Device Manager/ESP32.
 
 type RobotState = "idle" | "listening" | "thinking" | "speaking" | "happy" | "sleeping" | "error";
 
@@ -313,7 +327,7 @@ export default function RobotPage() {
   const [visionBusy, setVisionBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ─── Presence camera (Phase 6E) + Social Brain (Phase 6F) ───────────────
+  // ─── Presence camera (Phase 6E) + Brain Loop (Phase 6F/6G) ───────────────
   const [presenceEnabled, setPresenceEnabled] = useState(false);
   const [presenceFrame, setPresenceFrame] = useState<PresenceFrame | null>(null);
   const [presenceGesture, setPresenceGesture] = useState<RobotGesture>("none");
@@ -321,10 +335,10 @@ export default function RobotPage() {
   const [attentionActive, setAttentionActive] = useState(false);
   const [blinkTrigger, setBlinkTrigger] = useState(0);
   const [sellingContext, setSellingContext] = useState(false);
-  const [lastSocialMood, setLastSocialMood] = useState<SocialMoodResult | null>(null);
-  const [socialDebug, setSocialDebug] = useState<ReturnType<SocialBrain["debugSnapshot"]> | null>(null);
-  const socialBrainRef = useRef<SocialBrain | null>(null);
-  if (!socialBrainRef.current) socialBrainRef.current = new SocialBrain();
+  const [projectContext, setProjectContext] = useState<string | null>(null);
+  const [lastCycle, setLastCycle] = useState<BrainCycleResult | null>(null);
+  const brainLoopRef = useRef<BrainLoop | null>(null);
+  if (!brainLoopRef.current) brainLoopRef.current = new BrainLoop();
   const latestFrameRef = useRef<PresenceFrame | null>(null);
   const gestureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mouthTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -481,12 +495,14 @@ export default function RobotPage() {
     errorTimerRef.current = setTimeout(() => setRobotState("idle"), 1500);
   }
 
-  // ─── Social Brain (Phase 6F) ────────────────────────────────────────────
+  // ─── Brain Loop (Phase 6G) ───────────────────────────────────────────────
   // "talking" = robot đang nghe/nghĩ/nói (chat text, vision đang xử lý, camera
-  // vision snapshot đang mở) — mục 3 "never interrupt" + mục 6 "keep eye
-  // contact while talking, return idle when stops": SocialBrain tự khoá lại
-  // (không đổi target, không phát look/greet/invite mới) suốt lúc này.
+  // vision snapshot đang mở) — dùng để suy ra conversationState cho
+  // BrainLoop, KHÔNG tính lại gì mới (mục 3 "never interrupt" của Phase 6F
+  // vẫn đúng nguyên vẹn qua GoalEngine: Conversation/Listening/Thinking luôn
+  // ưu tiên cao nhất, xem goal-engine.ts).
   const talking = robotState === "listening" || robotState === "thinking" || robotState === "speaking";
+  const conversationState: ConversationState = !talking ? "none" : isListening ? "mic_listening" : robotState === "speaking" ? "speaking" : "thinking";
 
   function triggerGesture(gesture: RobotGesture, ms: number) {
     if (gestureTimerRef.current) clearTimeout(gestureTimerRef.current);
@@ -500,108 +516,143 @@ export default function RobotPage() {
     mouthTimerRef.current = setTimeout(() => setPresenceMouth(null), ms);
   }
 
-  // Best-effort — chỗ DeviceManager thật (mục 9 "later DeviceManager will
-  // simply consume actions") sau này chỉ việc đọc lại các DeviceEvent
-  // "social.*" này, KHÔNG chặn UI nếu lỗi/mất mạng.
-  function logSocialAction(action: SocialAction) {
+  // Best-effort — chỗ DeviceManager thật (mục "Simulation": "Provide debug
+  // overlay"/kế thừa mục 9 Phase 6F "later DeviceManager will simply consume
+  // actions") sau này chỉ việc đọc lại các DeviceEvent "brain.*" này, KHÔNG
+  // chặn UI nếu lỗi/mất mạng (BrainLoop.cycle() bản thân không await gì cả —
+  // "Never block" — log là việc RIÊNG của executor này, ngoài vòng lặp).
+  function logBrainAction(result: BrainCycleResult) {
     fetch("/api/robot/event", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event_type: `social.${action.kind}`, payload: action as unknown as Record<string, unknown> }),
+      body: JSON.stringify({
+        event_type: `brain.${result.action.type}`,
+        payload: { goal: result.goal, action: result.action, visualHint: result.visualHint } as unknown as Record<string, unknown>,
+      }),
     }).catch(() => {
-      // Không có robot device/offline — Social Brain vẫn chạy được trên simulator.
+      // Không có robot device/offline — Brain Loop vẫn chạy được trên simulator.
     });
   }
 
-  // Mood (mục 1 "every response carries one mood") điều khiển blink/đầu ngay —
-  // faceState ("eye animation") do từng nhánh bên dưới tự set qua setRobotState
-  // (idle/look set ngay, greet/invite/joke/goodbye set SAU KHI nói xong) để
-  // không đè animation "đang nói" giữa chừng.
-  function applyMoodVisuals(mood: SocialMoodResult) {
-    setAttentionActive(mood.fastBlink);
-    if (mood.gesture) triggerGesture(mood.gesture, mood.gesture === "breathe" ? 1800 : 900);
+  // Mood đi kèm PlannedAction chỉ giữ lại id (mục "Mood controls" đã tính 1
+  // lần trong MoodEngine, xem moodFaceParams() — tra lại bảng ở executor này
+  // thay vì mang cả object nặng qua từng lớp BrainLoop/ActionPlanner).
+  function applyMoodVisuals(mood: SocialMood) {
+    const params = moodFaceParams(mood);
+    setAttentionActive(params.fastBlink);
   }
 
-  function handleSocialAction(action: SocialAction) {
-    logSocialAction(action);
-    applyMoodVisuals(action.mood);
-    setLastSocialMood(action.mood);
-
-    if (action.kind === "idle") {
-      setRobotState(action.mood.faceState);
-      switch (action.behavior) {
-        case "blink":
-          setBlinkTrigger((n) => n + 1);
-          break;
-        case "look_left":
-          applyGaze("left");
-          break;
-        case "look_right":
-          applyGaze("right");
-          break;
-        case "smile":
-          triggerMouthSmile(1200);
-          break;
-        case "breathe":
-          // Hành vi idle "breathe" (mục 8) tự nó phải kích hoạt gesture, KHÔNG
-          // phụ thuộc mood hiện tại có gesture hay không (applyMoodVisuals()
-          // chỉ áp gesture khi MOOD yêu cầu — 2 nguồn kích hoạt độc lập nhau).
-          triggerGesture("breathe", 1800);
-          break;
-      }
-      return;
-    }
-    if (action.kind === "look") {
-      setRobotState(action.mood.faceState);
-      return; // hướng nhìn thật do cameraTarget (prop RobotFaceKiosk bên dưới) lo liên tục — không cần gazeOverride rời rạc ở đây
-    }
-
-    // greet/invite/joke/goodbye — đều có `say` (mục 5 Humor Layer).
-    setMessages((prev) => [
-      ...prev,
-      { id: `social-${Date.now()}`, role: "robot", content: action.say, created_at: new Date().toISOString() },
-    ]);
-    if (autoSpeak) speak(action.say, () => setRobotState(action.mood.faceState));
-    else setRobotState(action.mood.faceState);
+  // visualHint — hiệu ứng hình ảnh phụ KHÔNG có action riêng trong vocabulary
+  // 15 action cố định (breathe/gật đầu/vẫy tay đã có từ Phase 6E/6F, giữ
+  // nguyên hiệu ứng, không mất gì khi chuyển sang Phase 6G).
+  function applyVisualHint(hint: VisualHint) {
+    if (hint === "breathe") triggerGesture("breathe", 1800);
+    else if (hint === "nod") triggerGesture("nod", 900);
+    else if (hint === "wave_gesture") triggerGesture("wave", 900);
   }
 
-  // Tick SocialBrain mỗi giây — idle behaviors chạy dù presence (camera)
-  // đang tắt, luật xã hội (look/chào/mời/tạm biệt) chỉ chạy khi có
-  // PresenceFrame thật. deps=[] nên hàm bên trong CHỈ được tạo 1 lần lúc
-  // mount — mọi state đọc trực tiếp (autoSpeak/isListening/sellingContext/
-  // lastResponse/robotState) sẽ "đóng băng" ở giá trị render đầu nếu gọi
-  // thẳng, nên interval gọi qua ref "luôn mới nhất" này (gán lại mỗi render).
-  function runSocialTick() {
+  // Execute — bước cuối cùng của vòng lặp (Observe→Think→Prioritize→Plan đã
+  // xong bên trong BrainLoop.cycle(), thuần logic không đụng DOM). Đúng 15
+  // action cố định, switch đủ cả 15 để TypeScript tự báo thiếu nếu sau này
+  // vocabulary đổi.
+  function executeBrainAction(result: BrainCycleResult) {
+    logBrainAction(result);
+    applyMoodVisuals(result.action.mood);
+    applyVisualHint(result.visualHint);
+    setLastCycle(result);
+
+    const { action } = result;
+    switch (action.type) {
+      case "Blink":
+        setBlinkTrigger((n) => n + 1);
+        break;
+      case "LookLeft":
+        applyGaze("left");
+        break;
+      case "LookRight":
+        applyGaze("right");
+        break;
+      case "LookAtPerson":
+        setGazeOverride(null); // cameraTarget (prop RobotFaceKiosk bên dưới) đã tự dẫn hướng liên tục
+        break;
+      case "Smile":
+        triggerMouthSmile(1200);
+        break;
+      case "Wave":
+        triggerGesture("wave", 900);
+        break;
+      case "Sleep":
+        setRobotState("sleeping");
+        break;
+      case "Wait":
+      case "StaySilent":
+        break; // "Doing nothing is a valid action" (mục "Thinking") — không cần side-effect
+      case "ReturnIdle":
+        setRobotState("idle"); // vừa rời 1 goal khác (Watching/Waiting/Selling/Sleeping...) — trả mặt về đúng trạng thái nghỉ, không để lại state cũ (vd "listening") lỡ dở
+        break;
+      case "ContinueConversation":
+        break; // luồng chat thật (sendChatMessage/speak) đã tự lo hết hiệu ứng, tránh làm 2 lần
+      case "StartConversation":
+      case "Invite":
+      case "Speak":
+      case "EndConversation":
+        break; // xử lý `say` chung bên dưới, dùng cho cả 4 loại
+    }
+
+    if (action.say) {
+      setMessages((prev) => [...prev, { id: `brain-${Date.now()}`, role: "robot", content: action.say as string, created_at: new Date().toISOString() }]);
+      applyGaze("center");
+      const faceState = moodFaceParams(action.mood).faceState;
+      if (autoSpeak) speak(action.say, () => setRobotState(faceState));
+      else setRobotState(faceState);
+    }
+  }
+
+  // BrainLoop chạy mỗi 200ms (mục "Loop": "Run every 200ms" — nhanh hơn hẳn
+  // vòng 1s cũ của Phase 6F, an toàn vì SocialBrain bên trong so mọi ngưỡng
+  // bằng `now` tuyệt đối, không đếm số lần gọi). deps=[] nên hàm bên trong
+  // CHỈ được tạo 1 lần lúc mount — mọi state đọc trực tiếp (autoSpeak/
+  // isListening/sellingContext/lastResponse/robotState...) sẽ "đóng băng" ở
+  // giá trị render đầu nếu gọi thẳng, nên interval gọi qua ref "luôn mới
+  // nhất" này (gán lại mỗi render, cùng pattern Phase 6E/6F đã dùng).
+  function runBrainCycle() {
+    if (!brainLoopRef.current) return;
     const now = Date.now();
-    const ctx: SocialBrainContext = {
-      isTalking: talking,
-      isListening,
+    const inputs: BrainLoopInputs = {
+      frame: latestFrameRef.current,
+      presenceEnabled,
+      conversationState,
+      voicePlaying: robotState === "speaking",
+      projectContext,
       sellingContext,
       chatMood: lastResponse?.mood as RobotMood | undefined,
     };
-    const actions = socialBrainRef.current?.tick(now, latestFrameRef.current, ctx) ?? [];
-    actions.forEach(handleSocialAction);
-    setSocialDebug(socialBrainRef.current?.debugSnapshot(now, ctx) ?? null);
+    const result = brainLoopRef.current.cycle(now, inputs);
+    executeBrainAction(result);
   }
-  const runSocialTickRef = useRef(runSocialTick);
-  runSocialTickRef.current = runSocialTick;
+  const runBrainCycleRef = useRef(runBrainCycle);
+  runBrainCycleRef.current = runBrainCycle;
 
   useEffect(() => {
-    const id = setInterval(() => runSocialTickRef.current(), 1000);
+    const id = setInterval(() => runBrainCycleRef.current(), 200);
     return () => clearInterval(id);
   }, []);
 
-  // Mục 7 "Sales Mode" — project context hiện tại có phải ChinChin không.
-  // Đọc lại GET /api/robot/continuity ĐÃ CÓ SẴN từ Phase 6B
-  // (activeProject.name) — KHÔNG thêm/đổi route nào, KHÔNG đụng Conversation
-  // Agent. Poll nhẹ mỗi 30s, đủ nhanh để bắt kịp lúc đổi project sáng tạo.
+  // Mục "Selling"/"projectContext" — tên project sáng tạo đang mở, đọc lại
+  // GET /api/robot/continuity ĐÃ CÓ SẴN từ Phase 6B (activeProject.name) —
+  // KHÔNG thêm/đổi route nào, KHÔNG đụng Conversation Agent. sellingContext
+  // (mục 7 Phase 6F "Sales Mode") suy thẳng từ tên này, không cần state
+  // riêng. Poll nhẹ mỗi 30s, đủ nhanh bắt kịp lúc đổi project sáng tạo.
   useEffect(() => {
     let cancelled = false;
     async function poll() {
       try {
         const res = await fetch("/api/robot/continuity");
         const json = (await res.json()) as { activeProject?: { name?: string } | null };
-        if (!cancelled) setSellingContext(json.activeProject?.name === "ChinChin");
+        if (cancelled) return;
+        const name = json.activeProject?.name ?? null;
+        setProjectContext(name);
+        setSellingContext(name === "ChinChin");
       } catch {
         // Lỗi mạng tạm thời — giữ nguyên giá trị cũ, không đổi mood vì lỗi vặt.
       }
@@ -878,10 +929,14 @@ export default function RobotPage() {
         ...prev,
         { id: `local-reply-${Date.now()}`, role: "robot", content: json.reply as string, created_at: new Date().toISOString() },
       ]);
-      // Mục 4 "last topic" — gắn câu hỏi vừa chat vào khách đang là
-      // currentTarget (nếu presence đang bật và có ai trước camera), để nếu
-      // họ quay lại trong 30 phút, describeReturning() có thể nhắc tới.
-      socialBrainRef.current?.noteTopic(Date.now(), { isTalking: true, isListening: false, sellingContext, chatMood: json.mood as RobotMood | undefined }, text);
+      // Mục 4 "last topic" (Phase 6F) — gắn câu hỏi vừa chat vào khách đang
+      // là currentTarget (nếu presence đang bật và có ai trước camera), để
+      // nếu họ quay lại trong 30 phút, describeReturning() có thể nhắc tới.
+      brainLoopRef.current?.noteTopic(
+        Date.now(),
+        { frame: latestFrameRef.current, presenceEnabled, conversationState: "thinking", voicePlaying: false, projectContext, sellingContext, chatMood: json.mood as RobotMood | undefined },
+        text
+      );
       applyGaze(json.eyes);
       const mapped = moodToState(json.mood) ?? "idle";
       if (autoSpeak && json.reply.trim()) {
@@ -939,7 +994,7 @@ export default function RobotPage() {
             <Badge variant="indigo">Brain OS Conversation Agent</Badge>
             <button
               onClick={togglePresence}
-              title="Bật camera để robot tự chào/để ý khi có người tới gần (Social Brain, Phase 6F)"
+              title="Bật camera để robot tự chào/để ý khi có người tới gần (Brain Loop, Phase 6G)"
               className={`text-[11px] px-2.5 py-1 rounded-lg active:scale-95 transition-all ${
                 presenceEnabled ? "bg-emerald-600/30 text-emerald-300" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
               }`}
@@ -1205,19 +1260,26 @@ export default function RobotPage() {
             <span>khoảng cách: {presenceFrame?.distance ?? "—"}</span>
             <span>chuyển động: {presenceFrame ? presenceFrame.motion.toFixed(2) : "—"}</span>
             <span>nguồn: {presenceFrame?.source ?? "—"}</span>
-            <span>attention: {attentionActive ? "có" : "không"}</span>
-            <span>mood: {lastSocialMood?.mood ?? "—"}</span>
             <span>selling: {sellingContext ? "có" : "không"}</span>
-            <span>attentionScore: {socialDebug?.attention.attentionScore.toFixed(2) ?? "—"}</span>
-            <span>currentTarget: {socialDebug?.attention.currentTargetId ?? "—"}</span>
-            <span>khách nhớ (30p): {socialDebug?.visitorCount ?? 0}</span>
+            <span>project: {projectContext ?? "—"}</span>
           </div>
-          {socialDebug?.currentVisitorDescription && (
-            <p className="mt-2 text-zinc-500">Quan sát khách hiện tại: {socialDebug.currentVisitorDescription} (ước lượng, không chắc chắn).</p>
-          )}
+
+          {/* Debug overlay Brain Loop (Phase 6G, mục "Simulation") — đúng 5 mục yêu cầu: Current Goal/Mood/Target/Next Action/Reason. */}
+          <div className="mt-3 pt-2 border-t border-zinc-800 grid grid-cols-2 sm:grid-cols-3 gap-y-1 font-mono text-zinc-400">
+            <span>Goal: {lastCycle?.goal ?? "—"}</span>
+            <span>Mood: {lastCycle?.action.mood ?? "—"}</span>
+            <span>Target: {lastCycle?.world.activeTargetId ?? "—"}</span>
+            <span>Next Action: {lastCycle?.action.type ?? "—"}</span>
+            <span>attentionScore: {lastCycle ? lastCycle.world.attentionScore.toFixed(2) : "—"}</span>
+            <span>idleSeconds: {lastCycle ? Math.round(lastCycle.world.idleSeconds) : "—"}</span>
+            <span>khách nhớ (30p): {lastCycle?.world.visitorCount ?? 0}</span>
+          </div>
+          {lastCycle && <p className="mt-2 text-zinc-500">Reason: {lastCycle.action.reason}</p>}
+          {lastCycle?.action.say && <p className="mt-1 text-zinc-500">Say: &ldquo;{lastCycle.action.say}&rdquo;</p>}
+
           <p className="mt-2 text-zinc-600">
-            Social Brain (Phase 6F) — luật look/chào/mời chỉ chạy khi bật camera Presence ở trên; idle behaviors
-            (blink/look/smile/breathe) vẫn chạy dù tắt.
+            Brain Loop (Phase 6G) — Observe→Think→Prioritize→Plan mỗi 200ms. Luật xã hội (look/chào/mời) chỉ chạy khi
+            bật camera Presence ở trên; idle behaviors/goal Idle vẫn chạy dù tắt.
           </p>
         </Card>
       </details>
