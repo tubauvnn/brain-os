@@ -4,7 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
-import { RobotFaceKiosk, type RobotFaceState } from "@/components/robot/RobotFaceKiosk";
+import { RobotFaceKiosk, type RobotFaceState, type RobotGesture } from "@/components/robot/RobotFaceKiosk";
+import { PresenceDetector } from "@/components/robot/PresenceDetector";
+import { PresenceEngine } from "@/lib/robot/presence-engine";
+import type { PresenceEvent, PresenceFrame } from "@/lib/robot/presence-types";
 
 // Bản reset (2026-07-08) — 1 màn demo sạch: mặt robot + 6 nút demo + chat gọn.
 // KHÔNG có camera, KHÔNG có hands-free voice loop, KHÔNG có OpenAI Realtime.
@@ -25,6 +28,18 @@ import { RobotFaceKiosk, type RobotFaceState } from "@/components/robot/RobotFac
 // Provider → Robot Personality → VoiceAgent → ElevenLabs, xem
 // src/lib/robot-ai/vision-handler.ts) — trang này KHÔNG gọi provider nào
 // trực tiếp, chỉ gọi 2 route đó.
+//
+// Phase 6E (2026-07-11) — Presence Engine: robot không còn thụ động chờ chat.
+// PresenceDetector (camera RIÊNG, tách khỏi camera chụp ảnh Vision ở trên)
+// đưa PresenceFrame mỗi ~350ms cho PresenceEngine (src/lib/robot/
+// presence-engine.ts, thuần logic không đụng DOM) — engine quyết định chào
+// khách mới/khách quen, "attention" khi bị nhìn thẳng, và idle behaviors
+// (blink/look/smile/breathe) mỗi 15-30s để robot không bao giờ đứng hình.
+// Camera presence TẮT mặc định (bấm nút "Presence" mới xin quyền) — idle
+// behaviors vẫn chạy dù presence tắt, chỉ riêng chào/attention/khách quen
+// cần camera. Mỗi PresenceEvent cũng POST best-effort qua /api/robot/event
+// (event_type "presence.<kind>") — chỗ DeviceManager thật sau này chỉ việc
+// đọc lại, không cần biết logic bên trong engine.
 
 type RobotState = "idle" | "listening" | "thinking" | "speaking" | "happy" | "sleeping" | "error";
 
@@ -287,6 +302,21 @@ export default function RobotPage() {
   const [visionBusy, setVisionBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ─── Presence Engine (Phase 6E) ──────────────────────────────────────────
+  const [presenceEnabled, setPresenceEnabled] = useState(false);
+  const [presenceGesture, setPresenceGesture] = useState<RobotGesture>("none");
+  const [presenceMouth, setPresenceMouth] = useState<"smile" | null>(null);
+  const [attentionActive, setAttentionActive] = useState(false);
+  const [blinkTrigger, setBlinkTrigger] = useState(0);
+  const [presenceDebug, setPresenceDebug] = useState<{ frame: PresenceFrame | null; visitors: number }>({ frame: null, visitors: 0 });
+  const presenceEngineRef = useRef<PresenceEngine | null>(null);
+  if (!presenceEngineRef.current) presenceEngineRef.current = new PresenceEngine();
+  const latestFrameRef = useRef<PresenceFrame | null>(null);
+  const talkingRef = useRef(false);
+  const attentionActiveRef = useRef(false);
+  const gestureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mouthTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Dọn camera stream + object URL khi rời trang — không để camera bật ngầm.
   useEffect(() => {
     return () => {
@@ -437,6 +467,135 @@ export default function RobotPage() {
     setRobotState("error");
     if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
     errorTimerRef.current = setTimeout(() => setRobotState("idle"), 1500);
+  }
+
+  // ─── Presence Engine (Phase 6E) ─────────────────────────────────────────
+  // "talking" = robot đang nghe/nghĩ/nói (chat text, vision đang xử lý, camera
+  // vision snapshot đang mở) — mục 6 "when user is talking, keep eye contact,
+  // when stops return idle": PresenceEngine tự tạm dừng idle behaviors lúc
+  // này (xem presence-engine.ts), page.tsx còn chặn thêm phần "say" của
+  // greet/attention để không chồng tiếng với câu trả lời chat.
+  const talking = robotState === "listening" || robotState === "thinking" || robotState === "speaking";
+  useEffect(() => {
+    talkingRef.current = talking;
+  }, [talking]);
+  useEffect(() => {
+    attentionActiveRef.current = attentionActive;
+  }, [attentionActive]);
+
+  function triggerGesture(gesture: RobotGesture, ms: number) {
+    if (gestureTimerRef.current) clearTimeout(gestureTimerRef.current);
+    setPresenceGesture(gesture);
+    gestureTimerRef.current = setTimeout(() => setPresenceGesture("none"), ms);
+  }
+
+  function triggerMouthSmile(ms: number) {
+    if (mouthTimerRef.current) clearTimeout(mouthTimerRef.current);
+    setPresenceMouth("smile");
+    mouthTimerRef.current = setTimeout(() => setPresenceMouth(null), ms);
+  }
+
+  // Best-effort — chỗ DeviceManager thật (mục 7) sau này chỉ việc đọc lại các
+  // DeviceEvent "presence.*" này, KHÔNG chặn UI nếu lỗi/mất mạng.
+  function logPresenceEvent(event: PresenceEvent) {
+    fetch("/api/robot/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event_type: `presence.${event.kind}`, payload: event as unknown as Record<string, unknown> }),
+    }).catch(() => {
+      // Không có robot device/offline — presence vẫn chạy được trên simulator.
+    });
+  }
+
+  function handlePresenceEvent(event: PresenceEvent) {
+    logPresenceEvent(event);
+    switch (event.kind) {
+      case "greet":
+      case "returning_visitor": {
+        if (talkingRef.current) return; // đang bận chat/vision — không chen giọng
+        setMessages((prev) => [
+          ...prev,
+          { id: `presence-${Date.now()}`, role: "robot", content: event.say, created_at: new Date().toISOString() },
+        ]);
+        applyGaze("center");
+        if (autoSpeak) speak(event.say, () => setRobotState("happy"));
+        else setRobotState("happy");
+        return;
+      }
+      case "attention": {
+        if (talkingRef.current) return;
+        setAttentionActive(event.on);
+        if (event.on) {
+          triggerGesture("nod", 900); // "slight head movement"
+          if (mouthTimerRef.current) clearTimeout(mouthTimerRef.current); // huỷ hẹn giờ smile idle nếu có, giữ cười liên tục
+          setPresenceMouth("smile");
+          if (event.say) {
+            setMessages((prev) => [
+              ...prev,
+              { id: `presence-${Date.now()}`, role: "robot", content: event.say as string, created_at: new Date().toISOString() },
+            ]);
+            if (autoSpeak) speak(event.say, () => setRobotState("happy"));
+          }
+        } else {
+          if (mouthTimerRef.current) clearTimeout(mouthTimerRef.current);
+          setPresenceMouth(null);
+        }
+        return;
+      }
+      case "idle": {
+        if (talkingRef.current) return;
+        switch (event.behavior) {
+          case "blink":
+            setBlinkTrigger((n) => n + 1);
+            break;
+          case "look_left":
+            applyGaze("left");
+            break;
+          case "look_right":
+            applyGaze("right");
+            break;
+          case "smile":
+            if (!attentionActiveRef.current) triggerMouthSmile(1200);
+            break;
+          case "breathe":
+            triggerGesture("breathe", 1800);
+            break;
+        }
+        return;
+      }
+      case "person_left":
+        return; // useRobotEyes tự quay về idle wander khi hết input thật
+    }
+  }
+
+  // setInterval deps=[] chỉ tạo closure 1 LẦN lúc mount — handlePresenceEvent
+  // đọc autoSpeak/... trực tiếp (không phải ref) nên phải gọi qua ref "luôn
+  // mới nhất" này, không thì toggle autoSpeak sau khi mount sẽ bị bỏ qua.
+  const handlePresenceEventRef = useRef(handlePresenceEvent);
+  handlePresenceEventRef.current = handlePresenceEvent;
+
+  // Tick PresenceEngine mỗi giây — idle behaviors chạy dù presence (camera)
+  // đang tắt, chào/attention/khách quen chỉ chạy khi có PresenceFrame thật.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const events = presenceEngineRef.current?.tick(Date.now(), talkingRef.current, latestFrameRef.current) ?? [];
+      events.forEach((event) => handlePresenceEventRef.current(event));
+      setPresenceDebug({ frame: latestFrameRef.current, visitors: presenceEngineRef.current?.visitorCount(Date.now()) ?? 0 });
+    }, 1000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function handlePresenceFrame(frame: PresenceFrame) {
+    latestFrameRef.current = frame;
+  }
+
+  function togglePresence() {
+    setPresenceEnabled((prev) => {
+      const next = !prev;
+      if (!next) latestFrameRef.current = null;
+      return next;
+    });
   }
 
   // ─── Vision (Phase 6C) ───────────────────────────────────────────────────
@@ -727,6 +886,7 @@ export default function RobotPage() {
 
   return (
     <div className="p-4 sm:p-6 max-w-[1120px] mx-auto">
+      <PresenceDetector enabled={presenceEnabled} onFrame={handlePresenceFrame} />
       <PageHeader
         title="Robot Chuối"
         description="Robot mô phỏng trên web, trước khi nối ESP32-S3"
@@ -734,6 +894,15 @@ export default function RobotPage() {
           <div className="flex items-center gap-2">
             <Badge variant="green">online</Badge>
             <Badge variant="indigo">Brain OS Conversation Agent</Badge>
+            <button
+              onClick={togglePresence}
+              title="Bật camera để robot tự chào khi có người tới gần (Presence Engine, Phase 6E)"
+              className={`text-[11px] px-2.5 py-1 rounded-lg active:scale-95 transition-all ${
+                presenceEnabled ? "bg-emerald-600/30 text-emerald-300" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+              }`}
+            >
+              👀 Presence: {presenceEnabled ? "Bật" : "Tắt"}
+            </button>
           </div>
         }
       />
@@ -760,6 +929,10 @@ export default function RobotPage() {
               state={robotState as RobotFaceState}
               gazeOverride={gazeOverride}
               enablePointerTracking
+              gesture={presenceGesture}
+              mouthOverride={presenceMouth}
+              attentionActive={attentionActive}
+              blinkTrigger={blinkTrigger}
               className={isFullscreen ? "w-[min(70vw,70vh)]" : "w-56 sm:w-64 md:w-72"}
             />
             <p className="mt-4 text-sm text-zinc-400">{STATUS_TEXT[robotState]}</p>
@@ -978,6 +1151,20 @@ export default function RobotPage() {
             <p className="text-zinc-500">Chưa có phản hồi nào.</p>
           )}
           <p className="mt-2 text-zinc-600">Sau này map hardwareCommand sang ESP32-S3.</p>
+        </Card>
+
+        <Card className="mt-2 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-1 font-mono text-zinc-400">
+            <span>presence: {presenceEnabled ? "bật" : "tắt"}</span>
+            <span>người: {presenceDebug.frame?.detected ? "có" : "không"}</span>
+            <span>số mặt: {presenceDebug.frame?.count ?? 0}</span>
+            <span>khoảng cách: {presenceDebug.frame?.distance ?? "—"}</span>
+            <span>chuyển động: {presenceDebug.frame ? presenceDebug.frame.motion.toFixed(2) : "—"}</span>
+            <span>nguồn: {presenceDebug.frame?.source ?? "—"}</span>
+            <span>attention: {attentionActive ? "có" : "không"}</span>
+            <span>khách quen nhớ (30p): {presenceDebug.visitors}</span>
+          </div>
+          <p className="mt-2 text-zinc-600">Presence Engine (Phase 6E) — chào/attention/khách quen chỉ chạy khi bật camera Presence ở trên; idle behaviors (blink/look/smile/breathe) vẫn chạy dù tắt.</p>
         </Card>
       </details>
     </div>

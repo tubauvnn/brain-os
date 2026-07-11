@@ -30,6 +30,10 @@ export type UseRobotEyesOptions = {
    * null/undefined = không override, quay lại camera/pointer/idle như bình thường.
    */
   gazeOverride?: { x: number; y: number } | null;
+  /** Presence Engine (Phase 6E mục 3) — người đang nhìn thẳng vào robot: chớp mắt nhanh hơn. */
+  attentionActive?: boolean;
+  /** Tăng số này để ép chớp mắt ngay lập tức (Phase 6E idle behavior "blink") — giá trị cụ thể không quan trọng, chỉ cần đổi. */
+  blinkTrigger?: number;
 };
 
 const MAX_PUPIL_X_PX = 15; // 12–18px theo yêu cầu
@@ -38,6 +42,9 @@ const LERP_FACTOR = 0.12;
 const IDLE_TIMEOUT_MS = 5000;
 const BLINK_MIN_MS = 3000;
 const BLINK_MAX_MS = 7000;
+// Presence Engine mục 3 "blink faster" khi có người đang chú ý nhìn robot.
+const BLINK_FAST_MIN_MS = 1200;
+const BLINK_FAST_MAX_MS = 2500;
 const BLINK_DURATION_MS = 150; // 120–180ms theo yêu cầu
 
 function clamp(v: number, min: number, max: number): number {
@@ -94,20 +101,32 @@ export function useRobotEyes(
     };
   }, []);
 
-  // Blink tự nhiên — random mỗi 3-7s, kéo dài 120-180ms. Chạy độc lập, không
-  // phụ thuộc rAF loop chính (chỉ setTimeout, rẻ).
+  // Blink tự nhiên — random mỗi 3-7s (1.2-2.5s nếu attentionActive, mục 3 "blink
+  // faster"), kéo dài 120-180ms. Chạy độc lập, không phụ thuộc rAF loop chính
+  // (chỉ setTimeout, rẻ). Đọc attentionActive tại THỜI ĐIỂM lên lịch (không
+  // phải lúc effect mount) nên đổi ngay từ lần chớp mắt kế tiếp.
   useEffect(() => {
     function scheduleNext() {
+      const fast = optsRef.current.attentionActive === true;
+      const delay = fast ? randomBetween(BLINK_FAST_MIN_MS, BLINK_FAST_MAX_MS) : randomBetween(BLINK_MIN_MS, BLINK_MAX_MS);
       blinkTimerRef.current = setTimeout(() => {
         blinkUntilRef.current = performance.now() + BLINK_DURATION_MS;
         scheduleNext();
-      }, randomBetween(BLINK_MIN_MS, BLINK_MAX_MS));
+      }, delay);
     }
     scheduleNext();
     return () => {
       if (blinkTimerRef.current) clearTimeout(blinkTimerRef.current);
     };
   }, []);
+
+  // Ép chớp mắt ngay lập tức khi blinkTrigger đổi giá trị — Presence Engine
+  // idle behavior "blink" (mục 5), tách khỏi lịch tự nhiên ở trên.
+  useEffect(() => {
+    if (opts.blinkTrigger === undefined) return;
+    blinkUntilRef.current = performance.now() + BLINK_DURATION_MS;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opts.blinkTrigger]);
 
   // Vòng lặp chính — rAF, ghi thẳng CSS var lên container ref (không setState).
   useEffect(() => {

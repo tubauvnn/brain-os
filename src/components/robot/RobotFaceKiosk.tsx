@@ -19,7 +19,7 @@ export type RobotFaceState =
   | "sleeping"
   | "error";
 
-export type RobotGesture = "none" | "wave" | "nod";
+export type RobotGesture = "none" | "wave" | "nod" | "breathe";
 
 const STATE_LABEL: Record<RobotFaceState, string> = {
   idle: "IDLE",
@@ -138,6 +138,12 @@ export type RobotFaceKioskProps = {
   className?: string;
   /** Hướng nhìn cố định (-1..1) từ lệnh robot-ai (eyes: left/right/up/down/center). */
   gazeOverride?: { x: number; y: number } | null;
+  /** Presence Engine (Phase 6E) — ép miệng cười tạm thời (attention/idle "smile"), chỉ áp dụng khi state đang idle/listening/happy. */
+  mouthOverride?: "smile" | null;
+  /** Presence Engine mục 3 — người đang nhìn thẳng vào robot: chớp mắt nhanh hơn. */
+  attentionActive?: boolean;
+  /** Presence Engine idle behavior "blink" — đổi số này để ép chớp mắt ngay. */
+  blinkTrigger?: number;
 };
 
 export function RobotFaceKiosk({
@@ -150,6 +156,9 @@ export function RobotFaceKiosk({
   statusLabel,
   className = "",
   gazeOverride,
+  mouthOverride,
+  attentionActive,
+  blinkTrigger,
 }: RobotFaceKioskProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   useRobotEyes(containerRef, {
@@ -157,15 +166,24 @@ export function RobotFaceKiosk({
     attention: attentionFromState(state),
     enablePointerTracking,
     gazeOverride,
+    attentionActive,
+    blinkTrigger,
   });
 
-  // Gesture (wave/nod) — hiệu ứng nhất thời, tự clear qua class CSS animation
-  // (không lặp), giống cơ chế cũ của RobotFace.tsx.
-  const gestureClass = gesture === "wave" ? styles.gestureWave : gesture === "nod" ? styles.gestureNod : "";
+  // Gesture (wave/nod/breathe) — hiệu ứng nhất thời, tự clear qua class CSS
+  // animation (không lặp), giống cơ chế cũ của RobotFace.tsx. "breathe" là
+  // Presence Engine idle behavior (mục 5) — nhấn thêm 1 nhịp thở sâu, tách
+  // khỏi animation breathe nền đã chạy liên tục trên .screen.
+  const gestureClass =
+    gesture === "wave" ? styles.gestureWave : gesture === "nod" ? styles.gestureNod : gesture === "breathe" ? styles.gestureBreathe : "";
 
   const ring = STATE_RING[state];
   const closedEyes = state === "sad" || state === "sleeping" || state === "error";
   const label = statusLabel ?? STATE_LABEL[state];
+  // Presence Engine "smile" (attention/idle) — chỉ ghi đè khi mặt đang ở
+  // trạng thái trung tính, không đè lên thinking/speaking/sleep/error đang
+  // có ý nghĩa riêng.
+  const mouthState = mouthOverride === "smile" && (state === "idle" || state === "listening" || state === "happy") ? "happy" : state;
 
   return (
     <div
@@ -178,7 +196,7 @@ export function RobotFaceKiosk({
     >
       <div className={`h-full w-full flex flex-col items-center justify-center gap-5 ${styles.screen} ${gestureClass}`}>
         <Eyes eyeColor={ring.eye} closed={closedEyes} />
-        <Mouth state={state} speakingLevel={speakingLevel} />
+        <Mouth state={mouthState} speakingLevel={speakingLevel} />
         {state === "sleeping" && (
           <div className="absolute top-6 right-8 flex flex-col items-end gap-0.5 font-mono text-indigo-300 text-xs">
             <span className={styles.zFloat} style={{ animationDelay: "0s" }}>Z</span>
