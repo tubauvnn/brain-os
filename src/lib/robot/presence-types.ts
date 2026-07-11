@@ -14,6 +14,8 @@ export type PresenceFrame = {
   motion: number; // 0-1, mức chuyển động khung hình này so với khung trước
   /** Vector thô ước lượng vùng mặt (KHÔNG phải face recognition thật) — null nếu không có mặt/không tin cậy (vd motion_fallback). Chỉ dùng để so "có phải cùng 1 người vừa gặp không" trong phiên hiện tại. */
   embedding: number[] | null;
+  /** Màu áo ước lượng THÔ (mẫu màu trung bình vùng ngay dưới mặt) — Phase 6F Conversation Memory. null nếu không có mặt thật (face_detector) để lấy mẫu. KHÔNG phải nhận diện trang phục thật, chỉ 1 màu đại diện gần đúng. */
+  shirtColor: { r: number; g: number; b: number; name: string } | null;
   source: "face_detector" | "motion_fallback" | "none";
 };
 
@@ -31,6 +33,7 @@ export const NO_PRESENCE_BASE: Omit<PresenceFrame, "motion"> = {
   size: 0,
   distance: "unknown",
   embedding: null,
+  shirtColor: null,
   source: "none",
 };
 

@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { computeEmbedding } from "@/lib/robot/visual-embedding";
-import { sizeToDistance, type PresenceFrame } from "@/lib/robot/presence-types";
+import { computeEmbedding, sampleShirtColor } from "@/lib/robot/visual-embedding";
+import { NO_PRESENCE_BASE, sizeToDistance, type PresenceFrame } from "@/lib/robot/presence-types";
 
 // PresenceDetector — Phase 6E mục 1. Camera RIÊNG cho presence (tách khỏi
 // camera chụp ảnh gửi Vision ở page.tsx) — xử lý hoàn toàn phía client, không
@@ -10,6 +10,10 @@ import { sizeToDistance, type PresenceFrame } from "@/lib/robot/presence-types";
 // như WebFaceTracker.tsx/RobotVision.tsx, nhưng bung thêm: đếm số mặt, ước
 // lượng khoảng cách, mức chuyển động, và 1 "temporary visual embedding" cho
 // PresenceEngine so khớp khách quen (KHÔNG phải face recognition thật).
+//
+// Phase 6F — thêm shirtColor (mẫu màu thô vùng dưới mặt, chỉ khi source=
+// face_detector có bounding box thật) cho ConversationMemory
+// (src/lib/robot/social/conversation-state.ts) mô tả khách vãng lai.
 
 type FaceDetectorLike = {
   detect(source: CanvasImageSource): Promise<{ boundingBox: { x: number; y: number; width: number; height: number } }[]>;
@@ -69,7 +73,7 @@ export function PresenceDetector({ enabled, onFrame }: PresenceDetectorProps) {
       // Không xin được quyền camera — báo "không có ai" thay vì im lặng,
       // idle behaviors ở PresenceEngine vẫn chạy bình thường (frame=null phía
       // page.tsx khi presence tắt hẳn; ở đây coi như không detect được gì).
-      onFrameRef.current({ detected: false, count: 0, x: 0, y: 0, size: 0, distance: "unknown", motion: 0, embedding: null, source: "none" });
+      onFrameRef.current({ ...NO_PRESENCE_BASE, motion: 0 });
       return;
     }
 
@@ -156,11 +160,12 @@ export function PresenceDetector({ enabled, onFrame }: PresenceDetectorProps) {
             distance: sizeToDistance(size),
             motion: diff.motion,
             embedding: computeEmbedding(imageData, f),
+            shirtColor: sampleShirtColor(imageData, f),
             source: "face_detector",
           });
           return;
         }
-        onFrameRef.current({ detected: false, count: 0, x: 0, y: 0, size: 0, distance: "unknown", motion: diff.motion, embedding: null, source: "none" });
+        onFrameRef.current({ ...NO_PRESENCE_BASE, motion: diff.motion });
         return;
       } catch {
         // FaceDetector lỗi runtime hiếm gặp — rơi xuống fallback cho frame này.
@@ -171,7 +176,7 @@ export function PresenceDetector({ enabled, onFrame }: PresenceDetectorProps) {
     // chuyển động + ước lượng vị trí trọng tâm. KHÔNG đếm được số người,
     // KHÔNG có embedding tin cậy nên không bật nhận diện "khách quen" ở nhánh này.
     if (diff.weight < MOTION_MIN_WEIGHT) {
-      onFrameRef.current({ detected: false, count: 0, x: 0, y: 0, size: 0, distance: "unknown", motion: diff.motion, embedding: null, source: "none" });
+      onFrameRef.current({ ...NO_PRESENCE_BASE, motion: diff.motion });
       return;
     }
     onFrameRef.current({
@@ -183,6 +188,7 @@ export function PresenceDetector({ enabled, onFrame }: PresenceDetectorProps) {
       distance: "unknown",
       motion: diff.motion,
       embedding: null,
+      shirtColor: null,
       source: "motion_fallback",
     });
   }

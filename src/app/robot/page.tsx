@@ -6,8 +6,10 @@ import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { RobotFaceKiosk, type RobotFaceState, type RobotGesture } from "@/components/robot/RobotFaceKiosk";
 import { PresenceDetector } from "@/components/robot/PresenceDetector";
-import { PresenceEngine } from "@/lib/robot/presence-engine";
-import type { PresenceEvent, PresenceFrame } from "@/lib/robot/presence-types";
+import type { PresenceFrame } from "@/lib/robot/presence-types";
+import { SocialBrain } from "@/lib/robot/social/social-brain";
+import type { SocialAction, SocialBrainContext, SocialMoodResult } from "@/lib/robot/social/types";
+import type { RobotMood } from "@/lib/robot-ai/types";
 
 // Bản reset (2026-07-08) — 1 màn demo sạch: mặt robot + 6 nút demo + chat gọn.
 // KHÔNG có camera, KHÔNG có hands-free voice loop, KHÔNG có OpenAI Realtime.
@@ -29,17 +31,26 @@ import type { PresenceEvent, PresenceFrame } from "@/lib/robot/presence-types";
 // src/lib/robot-ai/vision-handler.ts) — trang này KHÔNG gọi provider nào
 // trực tiếp, chỉ gọi 2 route đó.
 //
-// Phase 6E (2026-07-11) — Presence Engine: robot không còn thụ động chờ chat.
-// PresenceDetector (camera RIÊNG, tách khỏi camera chụp ảnh Vision ở trên)
-// đưa PresenceFrame mỗi ~350ms cho PresenceEngine (src/lib/robot/
-// presence-engine.ts, thuần logic không đụng DOM) — engine quyết định chào
-// khách mới/khách quen, "attention" khi bị nhìn thẳng, và idle behaviors
-// (blink/look/smile/breathe) mỗi 15-30s để robot không bao giờ đứng hình.
-// Camera presence TẮT mặc định (bấm nút "Presence" mới xin quyền) — idle
-// behaviors vẫn chạy dù presence tắt, chỉ riêng chào/attention/khách quen
-// cần camera. Mỗi PresenceEvent cũng POST best-effort qua /api/robot/event
-// (event_type "presence.<kind>") — chỗ DeviceManager thật sau này chỉ việc
-// đọc lại, không cần biết logic bên trong engine.
+// Phase 6E (2026-07-11) — Presence Detector: PresenceDetector.tsx (camera
+// RIÊNG, tách khỏi camera chụp ảnh Vision ở trên) đưa PresenceFrame mỗi
+// ~350ms — cảm biến thô (có người không/số mặt/khoảng cách/chuyển động/
+// embedding tạm thời), không tự quyết định hành vi gì. Camera presence TẮT
+// mặc định (bấm nút "Presence" mới xin quyền).
+//
+// Phase 6F (2026-07-11) — Social Brain: SocialBrain (src/lib/robot/social/,
+// thuần logic không đụng DOM) là nơi DUY NHẤT quyết định hành vi xã giao từ
+// PresenceFrame — gộp MoodEngine (9 mood, mỗi hành động đều mang theo),
+// AttentionEngine (currentTarget/attentionScore, luật bậc thời gian nhìn:
+// 2-3s "look", 5s chào, 10s mời — mỗi bậc CHỈ 1 LẦN cho 1 người, không lặp
+// lại), ConversationMemory (nhớ khách vãng lai ~30 phút, luôn nói giọng
+// phỏng đoán) và HumorEngine (câu chào/đùa/tạm biệt/bán hàng xoay vòng,
+// không lặp liền nhau — KHÔNG gọi AI provider nào). Idle behaviors
+// (blink/look/smile/breathe mỗi 15-30s) vẫn chạy dù camera presence tắt;
+// SocialBrain tự khoá lại (không đổi target/không nói gì) suốt lúc robot
+// đang nghe/nghĩ/nói chuyện thật (mục 3 "never interrupt"). Không đụng Vision
+// provider/Conversation Agent/Device Manager/ESP32 — mỗi SocialAction vẫn
+// POST best-effort qua /api/robot/event (event_type "social.<kind>") như
+// Phase 6E, cùng 1 điểm vào cho DeviceManager thật sau này.
 
 type RobotState = "idle" | "listening" | "thinking" | "speaking" | "happy" | "sleeping" | "error";
 
@@ -302,18 +313,19 @@ export default function RobotPage() {
   const [visionBusy, setVisionBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ─── Presence Engine (Phase 6E) ──────────────────────────────────────────
+  // ─── Presence camera (Phase 6E) + Social Brain (Phase 6F) ───────────────
   const [presenceEnabled, setPresenceEnabled] = useState(false);
+  const [presenceFrame, setPresenceFrame] = useState<PresenceFrame | null>(null);
   const [presenceGesture, setPresenceGesture] = useState<RobotGesture>("none");
   const [presenceMouth, setPresenceMouth] = useState<"smile" | null>(null);
   const [attentionActive, setAttentionActive] = useState(false);
   const [blinkTrigger, setBlinkTrigger] = useState(0);
-  const [presenceDebug, setPresenceDebug] = useState<{ frame: PresenceFrame | null; visitors: number }>({ frame: null, visitors: 0 });
-  const presenceEngineRef = useRef<PresenceEngine | null>(null);
-  if (!presenceEngineRef.current) presenceEngineRef.current = new PresenceEngine();
+  const [sellingContext, setSellingContext] = useState(false);
+  const [lastSocialMood, setLastSocialMood] = useState<SocialMoodResult | null>(null);
+  const [socialDebug, setSocialDebug] = useState<ReturnType<SocialBrain["debugSnapshot"]> | null>(null);
+  const socialBrainRef = useRef<SocialBrain | null>(null);
+  if (!socialBrainRef.current) socialBrainRef.current = new SocialBrain();
   const latestFrameRef = useRef<PresenceFrame | null>(null);
-  const talkingRef = useRef(false);
-  const attentionActiveRef = useRef(false);
   const gestureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mouthTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -469,19 +481,12 @@ export default function RobotPage() {
     errorTimerRef.current = setTimeout(() => setRobotState("idle"), 1500);
   }
 
-  // ─── Presence Engine (Phase 6E) ─────────────────────────────────────────
+  // ─── Social Brain (Phase 6F) ────────────────────────────────────────────
   // "talking" = robot đang nghe/nghĩ/nói (chat text, vision đang xử lý, camera
-  // vision snapshot đang mở) — mục 6 "when user is talking, keep eye contact,
-  // when stops return idle": PresenceEngine tự tạm dừng idle behaviors lúc
-  // này (xem presence-engine.ts), page.tsx còn chặn thêm phần "say" của
-  // greet/attention để không chồng tiếng với câu trả lời chat.
+  // vision snapshot đang mở) — mục 3 "never interrupt" + mục 6 "keep eye
+  // contact while talking, return idle when stops": SocialBrain tự khoá lại
+  // (không đổi target, không phát look/greet/invite mới) suốt lúc này.
   const talking = robotState === "listening" || robotState === "thinking" || robotState === "speaking";
-  useEffect(() => {
-    talkingRef.current = talking;
-  }, [talking]);
-  useEffect(() => {
-    attentionActiveRef.current = attentionActive;
-  }, [attentionActive]);
 
   function triggerGesture(gesture: RobotGesture, ms: number) {
     if (gestureTimerRef.current) clearTimeout(gestureTimerRef.current);
@@ -495,108 +500,142 @@ export default function RobotPage() {
     mouthTimerRef.current = setTimeout(() => setPresenceMouth(null), ms);
   }
 
-  // Best-effort — chỗ DeviceManager thật (mục 7) sau này chỉ việc đọc lại các
-  // DeviceEvent "presence.*" này, KHÔNG chặn UI nếu lỗi/mất mạng.
-  function logPresenceEvent(event: PresenceEvent) {
+  // Best-effort — chỗ DeviceManager thật (mục 9 "later DeviceManager will
+  // simply consume actions") sau này chỉ việc đọc lại các DeviceEvent
+  // "social.*" này, KHÔNG chặn UI nếu lỗi/mất mạng.
+  function logSocialAction(action: SocialAction) {
     fetch("/api/robot/event", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event_type: `presence.${event.kind}`, payload: event as unknown as Record<string, unknown> }),
+      body: JSON.stringify({ event_type: `social.${action.kind}`, payload: action as unknown as Record<string, unknown> }),
     }).catch(() => {
-      // Không có robot device/offline — presence vẫn chạy được trên simulator.
+      // Không có robot device/offline — Social Brain vẫn chạy được trên simulator.
     });
   }
 
-  function handlePresenceEvent(event: PresenceEvent) {
-    logPresenceEvent(event);
-    switch (event.kind) {
-      case "greet":
-      case "returning_visitor": {
-        if (talkingRef.current) return; // đang bận chat/vision — không chen giọng
-        setMessages((prev) => [
-          ...prev,
-          { id: `presence-${Date.now()}`, role: "robot", content: event.say, created_at: new Date().toISOString() },
-        ]);
-        applyGaze("center");
-        if (autoSpeak) speak(event.say, () => setRobotState("happy"));
-        else setRobotState("happy");
-        return;
-      }
-      case "attention": {
-        if (talkingRef.current) return;
-        setAttentionActive(event.on);
-        if (event.on) {
-          triggerGesture("nod", 900); // "slight head movement"
-          if (mouthTimerRef.current) clearTimeout(mouthTimerRef.current); // huỷ hẹn giờ smile idle nếu có, giữ cười liên tục
-          setPresenceMouth("smile");
-          if (event.say) {
-            setMessages((prev) => [
-              ...prev,
-              { id: `presence-${Date.now()}`, role: "robot", content: event.say as string, created_at: new Date().toISOString() },
-            ]);
-            if (autoSpeak) speak(event.say, () => setRobotState("happy"));
-          }
-        } else {
-          if (mouthTimerRef.current) clearTimeout(mouthTimerRef.current);
-          setPresenceMouth(null);
-        }
-        return;
-      }
-      case "idle": {
-        if (talkingRef.current) return;
-        switch (event.behavior) {
-          case "blink":
-            setBlinkTrigger((n) => n + 1);
-            break;
-          case "look_left":
-            applyGaze("left");
-            break;
-          case "look_right":
-            applyGaze("right");
-            break;
-          case "smile":
-            if (!attentionActiveRef.current) triggerMouthSmile(1200);
-            break;
-          case "breathe":
-            triggerGesture("breathe", 1800);
-            break;
-        }
-        return;
-      }
-      case "person_left":
-        return; // useRobotEyes tự quay về idle wander khi hết input thật
-    }
+  // Mood (mục 1 "every response carries one mood") điều khiển blink/đầu ngay —
+  // faceState ("eye animation") do từng nhánh bên dưới tự set qua setRobotState
+  // (idle/look set ngay, greet/invite/joke/goodbye set SAU KHI nói xong) để
+  // không đè animation "đang nói" giữa chừng.
+  function applyMoodVisuals(mood: SocialMoodResult) {
+    setAttentionActive(mood.fastBlink);
+    if (mood.gesture) triggerGesture(mood.gesture, mood.gesture === "breathe" ? 1800 : 900);
   }
 
-  // setInterval deps=[] chỉ tạo closure 1 LẦN lúc mount — handlePresenceEvent
-  // đọc autoSpeak/... trực tiếp (không phải ref) nên phải gọi qua ref "luôn
-  // mới nhất" này, không thì toggle autoSpeak sau khi mount sẽ bị bỏ qua.
-  const handlePresenceEventRef = useRef(handlePresenceEvent);
-  handlePresenceEventRef.current = handlePresenceEvent;
+  function handleSocialAction(action: SocialAction) {
+    logSocialAction(action);
+    applyMoodVisuals(action.mood);
+    setLastSocialMood(action.mood);
 
-  // Tick PresenceEngine mỗi giây — idle behaviors chạy dù presence (camera)
-  // đang tắt, chào/attention/khách quen chỉ chạy khi có PresenceFrame thật.
+    if (action.kind === "idle") {
+      setRobotState(action.mood.faceState);
+      switch (action.behavior) {
+        case "blink":
+          setBlinkTrigger((n) => n + 1);
+          break;
+        case "look_left":
+          applyGaze("left");
+          break;
+        case "look_right":
+          applyGaze("right");
+          break;
+        case "smile":
+          triggerMouthSmile(1200);
+          break;
+        case "breathe":
+          // Hành vi idle "breathe" (mục 8) tự nó phải kích hoạt gesture, KHÔNG
+          // phụ thuộc mood hiện tại có gesture hay không (applyMoodVisuals()
+          // chỉ áp gesture khi MOOD yêu cầu — 2 nguồn kích hoạt độc lập nhau).
+          triggerGesture("breathe", 1800);
+          break;
+      }
+      return;
+    }
+    if (action.kind === "look") {
+      setRobotState(action.mood.faceState);
+      return; // hướng nhìn thật do cameraTarget (prop RobotFaceKiosk bên dưới) lo liên tục — không cần gazeOverride rời rạc ở đây
+    }
+
+    // greet/invite/joke/goodbye — đều có `say` (mục 5 Humor Layer).
+    setMessages((prev) => [
+      ...prev,
+      { id: `social-${Date.now()}`, role: "robot", content: action.say, created_at: new Date().toISOString() },
+    ]);
+    if (autoSpeak) speak(action.say, () => setRobotState(action.mood.faceState));
+    else setRobotState(action.mood.faceState);
+  }
+
+  // Tick SocialBrain mỗi giây — idle behaviors chạy dù presence (camera)
+  // đang tắt, luật xã hội (look/chào/mời/tạm biệt) chỉ chạy khi có
+  // PresenceFrame thật. deps=[] nên hàm bên trong CHỈ được tạo 1 lần lúc
+  // mount — mọi state đọc trực tiếp (autoSpeak/isListening/sellingContext/
+  // lastResponse/robotState) sẽ "đóng băng" ở giá trị render đầu nếu gọi
+  // thẳng, nên interval gọi qua ref "luôn mới nhất" này (gán lại mỗi render).
+  function runSocialTick() {
+    const now = Date.now();
+    const ctx: SocialBrainContext = {
+      isTalking: talking,
+      isListening,
+      sellingContext,
+      chatMood: lastResponse?.mood as RobotMood | undefined,
+    };
+    const actions = socialBrainRef.current?.tick(now, latestFrameRef.current, ctx) ?? [];
+    actions.forEach(handleSocialAction);
+    setSocialDebug(socialBrainRef.current?.debugSnapshot(now, ctx) ?? null);
+  }
+  const runSocialTickRef = useRef(runSocialTick);
+  runSocialTickRef.current = runSocialTick;
+
   useEffect(() => {
-    const id = setInterval(() => {
-      const events = presenceEngineRef.current?.tick(Date.now(), talkingRef.current, latestFrameRef.current) ?? [];
-      events.forEach((event) => handlePresenceEventRef.current(event));
-      setPresenceDebug({ frame: latestFrameRef.current, visitors: presenceEngineRef.current?.visitorCount(Date.now()) ?? 0 });
-    }, 1000);
+    const id = setInterval(() => runSocialTickRef.current(), 1000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Mục 7 "Sales Mode" — project context hiện tại có phải ChinChin không.
+  // Đọc lại GET /api/robot/continuity ĐÃ CÓ SẴN từ Phase 6B
+  // (activeProject.name) — KHÔNG thêm/đổi route nào, KHÔNG đụng Conversation
+  // Agent. Poll nhẹ mỗi 30s, đủ nhanh để bắt kịp lúc đổi project sáng tạo.
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch("/api/robot/continuity");
+        const json = (await res.json()) as { activeProject?: { name?: string } | null };
+        if (!cancelled) setSellingContext(json.activeProject?.name === "ChinChin");
+      } catch {
+        // Lỗi mạng tạm thời — giữ nguyên giá trị cũ, không đổi mood vì lỗi vặt.
+      }
+    }
+    poll();
+    const id = setInterval(poll, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   function handlePresenceFrame(frame: PresenceFrame) {
     latestFrameRef.current = frame;
+    setPresenceFrame(frame);
   }
 
   function togglePresence() {
     setPresenceEnabled((prev) => {
       const next = !prev;
-      if (!next) latestFrameRef.current = null;
+      if (!next) {
+        latestFrameRef.current = null;
+        setPresenceFrame(null);
+      }
       return next;
     });
   }
+
+  // "look" (mục 3, 2-3s) — mắt hướng liên tục về phía người đang đứng trước
+  // camera, KHÔNG chỉ khi tier "look" vừa kích hoạt (tự nhiên hơn, và cũng là
+  // cách mục 6 "keep eye contact while talking" có tác dụng thật khi camera
+  // presence đang bật). detected=false hoặc presence tắt → useRobotEyes tự
+  // rơi về pointer/idle wander như cũ.
+  const cameraTarget = presenceEnabled && presenceFrame?.detected ? { x: presenceFrame.x, y: presenceFrame.y, detected: true } : null;
 
   // ─── Vision (Phase 6C) ───────────────────────────────────────────────────
   // State binding mục 10: mở camera = observing (dùng lại "listening" — face
@@ -839,6 +878,10 @@ export default function RobotPage() {
         ...prev,
         { id: `local-reply-${Date.now()}`, role: "robot", content: json.reply as string, created_at: new Date().toISOString() },
       ]);
+      // Mục 4 "last topic" — gắn câu hỏi vừa chat vào khách đang là
+      // currentTarget (nếu presence đang bật và có ai trước camera), để nếu
+      // họ quay lại trong 30 phút, describeReturning() có thể nhắc tới.
+      socialBrainRef.current?.noteTopic(Date.now(), { isTalking: true, isListening: false, sellingContext, chatMood: json.mood as RobotMood | undefined }, text);
       applyGaze(json.eyes);
       const mapped = moodToState(json.mood) ?? "idle";
       if (autoSpeak && json.reply.trim()) {
@@ -896,7 +939,7 @@ export default function RobotPage() {
             <Badge variant="indigo">Brain OS Conversation Agent</Badge>
             <button
               onClick={togglePresence}
-              title="Bật camera để robot tự chào khi có người tới gần (Presence Engine, Phase 6E)"
+              title="Bật camera để robot tự chào/để ý khi có người tới gần (Social Brain, Phase 6F)"
               className={`text-[11px] px-2.5 py-1 rounded-lg active:scale-95 transition-all ${
                 presenceEnabled ? "bg-emerald-600/30 text-emerald-300" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
               }`}
@@ -928,6 +971,7 @@ export default function RobotPage() {
             <RobotFaceKiosk
               state={robotState as RobotFaceState}
               gazeOverride={gazeOverride}
+              cameraTarget={cameraTarget}
               enablePointerTracking
               gesture={presenceGesture}
               mouthOverride={presenceMouth}
@@ -1156,15 +1200,25 @@ export default function RobotPage() {
         <Card className="mt-2 text-xs">
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-1 font-mono text-zinc-400">
             <span>presence: {presenceEnabled ? "bật" : "tắt"}</span>
-            <span>người: {presenceDebug.frame?.detected ? "có" : "không"}</span>
-            <span>số mặt: {presenceDebug.frame?.count ?? 0}</span>
-            <span>khoảng cách: {presenceDebug.frame?.distance ?? "—"}</span>
-            <span>chuyển động: {presenceDebug.frame ? presenceDebug.frame.motion.toFixed(2) : "—"}</span>
-            <span>nguồn: {presenceDebug.frame?.source ?? "—"}</span>
+            <span>người: {presenceFrame?.detected ? "có" : "không"}</span>
+            <span>số mặt: {presenceFrame?.count ?? 0}</span>
+            <span>khoảng cách: {presenceFrame?.distance ?? "—"}</span>
+            <span>chuyển động: {presenceFrame ? presenceFrame.motion.toFixed(2) : "—"}</span>
+            <span>nguồn: {presenceFrame?.source ?? "—"}</span>
             <span>attention: {attentionActive ? "có" : "không"}</span>
-            <span>khách quen nhớ (30p): {presenceDebug.visitors}</span>
+            <span>mood: {lastSocialMood?.mood ?? "—"}</span>
+            <span>selling: {sellingContext ? "có" : "không"}</span>
+            <span>attentionScore: {socialDebug?.attention.attentionScore.toFixed(2) ?? "—"}</span>
+            <span>currentTarget: {socialDebug?.attention.currentTargetId ?? "—"}</span>
+            <span>khách nhớ (30p): {socialDebug?.visitorCount ?? 0}</span>
           </div>
-          <p className="mt-2 text-zinc-600">Presence Engine (Phase 6E) — chào/attention/khách quen chỉ chạy khi bật camera Presence ở trên; idle behaviors (blink/look/smile/breathe) vẫn chạy dù tắt.</p>
+          {socialDebug?.currentVisitorDescription && (
+            <p className="mt-2 text-zinc-500">Quan sát khách hiện tại: {socialDebug.currentVisitorDescription} (ước lượng, không chắc chắn).</p>
+          )}
+          <p className="mt-2 text-zinc-600">
+            Social Brain (Phase 6F) — luật look/chào/mời chỉ chạy khi bật camera Presence ở trên; idle behaviors
+            (blink/look/smile/breathe) vẫn chạy dù tắt.
+          </p>
         </Card>
       </details>
     </div>
