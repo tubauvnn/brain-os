@@ -11,6 +11,13 @@ export type Intent =
   | "image_request"
   | "project_request"
   | "tool_request"
+  // "vision_understanding" — Phase 6C. KHÔNG BAO GIỜ được resolveIntent() trả
+  // về (ảnh không đi qua Intent Resolver — /api/robot/vision/analyze tự gắn
+  // tag này khi gọi applyRobotPersonality(), để câu trả lời phân tích ảnh
+  // dùng ĐÚNG lớp Robot Personality như mọi câu trả lời khác, xem
+  // src/lib/robot-ai/personality.ts). Giữ trong cùng union Intent để dùng lại
+  // toàn bộ kiểu dữ liệu hiện có thay vì tạo type song song.
+  | "vision_understanding"
   | "unknown";
 
 // Intent Resolver — luật xác định (deterministic), KHÔNG gọi model. Chỉ so khớp

@@ -142,15 +142,24 @@ export async function deleteMemory(id: string): Promise<MemoryItem | null> {
 // Resolver quyết định) — còn "ghi cái gì có an toàn không" là quy tắc DỮ LIỆU
 // thuộc về chính Memory service.
 
+// Phase 6C regression check phát hiện 2 lỗi thật ở đây (không phải diễn giải
+// quá hẹp — lỗi thật): `[:là]` là CHARACTER CLASS (khớp 1 ký tự bất kỳ trong
+// ':'/'l'/'à', không phải chuỗi "là"), và ban đầu còn đòi hỏi từ khoá đứng
+// NGAY TRƯỚC ":"/"="/"là" — câu tự nhiên tiếng Việt hay chen thêm từ ở giữa
+// ("password CỦA TAO là...") nên không khớp. Sửa: chỉ cần từ khoá nhạy cảm
+// xuất hiện BẤT KỲ ĐÂU trong câu là đủ để từ chối lưu — thà chặn nhầm 1 câu
+// vô hại còn hơn để lọt 1 secret thật (đây chỉ là remember qua chat, người
+// dùng luôn có thể diễn đạt lại nếu bị chặn nhầm).
+// "token" giữ riêng (không chỉ "access token") — token nói chung hầu như
+// luôn là thông tin xác thực trong ngữ cảnh này. KHÔNG thêm "bí mật" (nghĩa
+// chung "secret" trong tiếng Việt) — quá rộng, sẽ chặn nhầm cả bí mật cá
+// nhân không liên quan bảo mật (vd "giữ bí mật giúp tao chuyện sinh nhật").
+const SECRET_KEYWORDS = ["mật khẩu", "password", "api key", "api-key", "apikey", "access token", "secret key", "token"];
 const SECRET_PATTERNS = [
   /\bsk-[a-zA-Z0-9]{10,}/,
   /\bAKIA[0-9A-Z]{12,}/,
   /\bBearer\s+[a-zA-Z0-9._-]{10,}/i,
-  /mật khẩu\s*[:là]/i,
-  /password\s*[:=]/i,
-  /api[_ -]?key/i,
-  /access[_ -]?token/i,
-  /secret[_ -]?key/i,
+  ...SECRET_KEYWORDS.map((w) => new RegExp(w.replace(/ /g, "[ _-]?"), "i")),
 ];
 
 export function looksLikeSecret(text: string): boolean {

@@ -18,6 +18,13 @@ import { RobotFaceKiosk, type RobotFaceState } from "@/components/robot/RobotFac
 // local-skills.ts/demo-scenarios.ts kịch bản gõ sẵn. Giọng nói ưu tiên
 // VoiceAgent → ElevenLabs thật (/api/voice/generate), rơi về giọng trình
 // duyệt (Web Speech API) nếu ElevenLabs lỗi/chưa cấu hình — không bịa giọng.
+//
+// Phase 6C (2026-07-11) — thêm vision (camera snapshot + upload ảnh) vào
+// ĐÚNG khung chat/nút bấm hiện có, KHÔNG dashboard riêng. Ảnh đi qua
+// /api/robot/vision/upload (lưu tạm) rồi /api/robot/vision/analyze (Vision
+// Provider → Robot Personality → VoiceAgent → ElevenLabs, xem
+// src/lib/robot-ai/vision-handler.ts) — trang này KHÔNG gọi provider nào
+// trực tiếp, chỉ gọi 2 route đó.
 
 type RobotState = "idle" | "listening" | "thinking" | "speaking" | "happy" | "sleeping" | "error";
 
@@ -59,7 +66,10 @@ const EYES_TO_GAZE: Record<string, { x: number; y: number } | null> = {
 };
 const EYES_OVERRIDE_MS = 1500;
 
-type ChatMessage = { id: string; role: "user" | "robot"; content: string; created_at: string };
+// imagePreviewUrl — chỉ để hiển thị thumbnail trong bong bóng chat của user
+// (object URL client-side, KHÔNG phải URL server-servable — ảnh không bao
+// giờ public, xem src/lib/vision/temp-store.ts).
+type ChatMessage = { id: string; role: "user" | "robot"; content: string; created_at: string; imagePreviewUrl?: string };
 
 type HardwareCommandDTO = { type: string; command: string; payload?: Record<string, unknown> };
 type ChatResponse = {
@@ -75,6 +85,16 @@ type ChatResponse = {
   suggestedNextActions?: string[];
   brainNote?: string;
   error?: string | null;
+};
+
+type VisionUploadResponse = { ok: boolean; imageId?: string; error?: string };
+type VisionAnalyzeResponse = {
+  ok: boolean;
+  text?: string;
+  visionMode?: string;
+  suggestedActions?: string[];
+  audio?: { provider: string; path: string } | null;
+  error?: string;
 };
 
 const QUICK_COMMAND_BUTTONS: { label: string; text: string }[] = [
@@ -257,6 +277,23 @@ export default function RobotPage() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const sessionIdRef = useRef<string>("");
 
+  // ─── Vision (Phase 6C) — camera preview + ảnh đang chờ gửi ──────────────
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<"environment" | "user">("environment");
+  const [canSwitchCamera, setCanSwitchCamera] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const [stagedImage, setStagedImage] = useState<{ blob: Blob; previewUrl: string; origin: "camera" | "upload" } | null>(null);
+  const [visionBusy, setVisionBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Dọn camera stream + object URL khi rời trang — không để camera bật ngầm.
+  useEffect(() => {
+    return () => {
+      cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
   // sessionId ổn định qua các lần mở lại trang — sinh 1 lần, lưu localStorage.
   useEffect(() => {
     try {
@@ -400,6 +437,182 @@ export default function RobotPage() {
     setRobotState("error");
     if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
     errorTimerRef.current = setTimeout(() => setRobotState("idle"), 1500);
+  }
+
+  // ─── Vision (Phase 6C) ───────────────────────────────────────────────────
+  // State binding mục 10: mở camera = observing (dùng lại "listening" — face
+  // chưa có riêng 1 state "observing"), gửi ảnh = thinking, trả lời = speaking,
+  // lỗi camera = alert (dùng lại flashError/"error"), xong = idle.
+  function stopCameraStream() {
+    cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
+    cameraStreamRef.current = null;
+  }
+
+  async function openCamera() {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      flashError();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: cameraFacing }, audio: false });
+      cameraStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setCameraOpen(true);
+      setRobotState("listening"); // observing
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        setCanSwitchCamera(devices.filter((d) => d.kind === "videoinput").length > 1);
+      } catch {
+        setCanSwitchCamera(false);
+      }
+    } catch {
+      // Quyền camera bị từ chối/không có camera — mục 13 test F: KHÔNG được
+      // làm hỏng /robot, chỉ báo lỗi ngắn rồi rơi về nút tải ảnh lên (vẫn hiển
+      // thị bình thường, không cần code riêng — nút Ảnh luôn có sẵn).
+      flashError();
+      setCameraOpen(false);
+    }
+  }
+
+  function closeCamera() {
+    stopCameraStream();
+    setCameraOpen(false);
+    setRobotState("idle");
+  }
+
+  async function switchCameraFacing() {
+    const next = cameraFacing === "environment" ? "user" : "environment";
+    setCameraFacing(next);
+    stopCameraStream();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: next }, audio: false });
+      cameraStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+    } catch {
+      flashError();
+      setCameraOpen(false);
+    }
+  }
+
+  function stageImage(blob: Blob, origin: "camera" | "upload") {
+    if (stagedImage) URL.revokeObjectURL(stagedImage.previewUrl);
+    setStagedImage({ blob, previewUrl: URL.createObjectURL(blob), origin });
+  }
+
+  function captureSnapshot() {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob((blob) => {
+      if (blob) stageImage(blob, "camera");
+    }, "image/jpeg", 0.9);
+    closeCamera();
+  }
+
+  const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+  const ALLOWED_UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
+  function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // cho phép chọn lại đúng file đó lần sau
+    if (!file) return;
+    if (!ALLOWED_UPLOAD_TYPES.includes(file.type)) {
+      flashError();
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      flashError();
+      return;
+    }
+    stageImage(file, "upload");
+  }
+
+  function removeStagedImage() {
+    if (stagedImage) URL.revokeObjectURL(stagedImage.previewUrl);
+    setStagedImage(null);
+  }
+
+  async function sendVisionMessage(promptText: string) {
+    if (!stagedImage || visionBusy) return;
+    const image = stagedImage;
+    const text = promptText.trim();
+
+    setVisionBusy(true);
+    setChatInput("");
+    setLastSuggestions([]);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `local-${Date.now()}`,
+        role: "user",
+        content: text || "(gửi ảnh)",
+        created_at: new Date().toISOString(),
+        imagePreviewUrl: image.previewUrl,
+      },
+    ]);
+    removeStagedImage();
+    setRobotState("thinking");
+
+    try {
+      const form = new FormData();
+      form.append("file", image.blob, image.origin === "camera" ? "capture.jpg" : "upload");
+      form.append("captureOrigin", image.origin);
+      if (sessionIdRef.current) form.append("sessionId", sessionIdRef.current);
+
+      const uploadRes = await fetch("/api/robot/vision/upload", { method: "POST", body: form });
+      const uploadJson = (await uploadRes.json()) as VisionUploadResponse;
+      if (!uploadJson.ok || !uploadJson.imageId) {
+        flashError();
+        return;
+      }
+
+      const analyzeRes = await fetch("/api/robot/vision/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageId: uploadJson.imageId, prompt: text || undefined, sessionId: sessionIdRef.current || undefined }),
+      });
+      const analyzeJson = (await analyzeRes.json()) as VisionAnalyzeResponse;
+      if (!analyzeJson.ok || !analyzeJson.text) {
+        flashError();
+        return;
+      }
+
+      setMessages((prev) => [
+        ...prev,
+        { id: `local-reply-${Date.now()}`, role: "robot", content: analyzeJson.text as string, created_at: new Date().toISOString() },
+      ]);
+      setLastSuggestions(analyzeJson.suggestedActions ?? []);
+
+      if (autoSpeak && analyzeJson.audio?.path) {
+        setRobotState("speaking");
+        const audio = audioRef.current ?? new Audio();
+        audioRef.current = audio;
+        audio.src = analyzeJson.audio.path;
+        audio.onended = () => setRobotState("idle");
+        audio.onerror = () => speakBrowser(analyzeJson.text as string, () => setRobotState("idle"));
+        await audio.play().catch(() => speakBrowser(analyzeJson.text as string, () => setRobotState("idle")));
+      } else if (autoSpeak) {
+        speakBrowser(analyzeJson.text, () => setRobotState("idle"));
+      } else {
+        setRobotState("idle");
+      }
+    } catch {
+      flashError();
+    } finally {
+      setVisionBusy(false);
+    }
   }
 
   // "Đọc lại"/"Dừng nói" — điều khiển audio ngay trên client, không gọi
@@ -608,11 +821,15 @@ export default function RobotPage() {
                       m.role === "user" ? "bg-indigo-600/30 text-indigo-100" : "bg-zinc-800 text-zinc-200"
                     }`}
                   >
+                    {m.imagePreviewUrl && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={m.imagePreviewUrl} alt="Ảnh đã gửi cho Chuối" className="rounded-lg mb-1.5 max-h-40 max-w-full object-cover" />
+                    )}
                     {m.content}
                   </div>
                 </div>
               ))}
-              {chatLoading && <p className="text-xs text-zinc-500">Chuối đang trả lời...</p>}
+              {(chatLoading || visionBusy) && <p className="text-xs text-zinc-500">Chuối đang trả lời...</p>}
             </div>
             {!chatLoading && lastSuggestions.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-3">
@@ -627,6 +844,75 @@ export default function RobotPage() {
                 ))}
               </div>
             )}
+            {/* Vision (Phase 6C) — camera preview / staged image, tối giản, không dashboard riêng */}
+            {cameraOpen && (
+              <div className="mb-3 rounded-xl overflow-hidden bg-black relative">
+                <video ref={videoRef} muted playsInline className="w-full max-h-56 object-cover" />
+                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-center gap-2">
+                  <button
+                    onClick={captureSnapshot}
+                    className="px-4 py-2 rounded-full bg-indigo-600 text-white text-sm font-medium active:scale-95 transition-all"
+                  >
+                    📸 Chụp
+                  </button>
+                  {canSwitchCamera && (
+                    <button
+                      onClick={switchCameraFacing}
+                      title="Đổi camera"
+                      className="w-10 h-10 rounded-full bg-zinc-800/90 text-zinc-200 flex items-center justify-center active:scale-95 transition-all"
+                    >
+                      🔄
+                    </button>
+                  )}
+                  <button
+                    onClick={closeCamera}
+                    title="Đóng camera"
+                    className="w-10 h-10 rounded-full bg-zinc-800/90 text-zinc-200 flex items-center justify-center active:scale-95 transition-all"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+            {stagedImage && !cameraOpen && (
+              <div className="mb-3 flex items-center gap-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={stagedImage.previewUrl} alt="Ảnh sắp gửi" className="h-16 w-16 rounded-lg object-cover border border-zinc-700" />
+                <div className="flex-1 text-xs text-zinc-400">Ảnh đã sẵn sàng — nhắn thêm câu hỏi (không bắt buộc) rồi bấm Gửi.</div>
+                <button
+                  onClick={removeStagedImage}
+                  title="Bỏ ảnh"
+                  className="w-8 h-8 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-red-600/20 hover:text-red-300 flex items-center justify-center active:scale-95 transition-all shrink-0"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={handleFileSelected}
+              className="hidden"
+            />
+            <div className="flex gap-2 mb-2">
+              <button
+                onClick={() => (cameraOpen ? closeCamera() : openCamera())}
+                title="Camera"
+                className={`text-[11px] px-2.5 py-1.5 rounded-lg active:scale-95 transition-all ${
+                  cameraOpen ? "bg-indigo-600/30 text-indigo-300" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                }`}
+              >
+                📷 Camera
+              </button>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                title="Tải ảnh lên"
+                className="text-[11px] px-2.5 py-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:bg-zinc-700 active:scale-95 transition-all"
+              >
+                🖼️ Tải ảnh lên
+              </button>
+            </div>
             <div className="flex gap-2">
               {sttSupported && (
                 <button
@@ -643,14 +929,14 @@ export default function RobotPage() {
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") sendChatMessage(chatInput);
+                  if (e.key === "Enter") (stagedImage ? sendVisionMessage(chatInput) : sendChatMessage(chatInput));
                 }}
-                placeholder="Nhắn gì đó với Chuối..."
+                placeholder={stagedImage ? "Hỏi gì đó về ảnh này (không bắt buộc)..." : "Nhắn gì đó với Chuối..."}
                 className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-200 min-h-[3rem]"
               />
               <button
-                onClick={() => sendChatMessage(chatInput)}
-                disabled={chatLoading || !chatInput.trim()}
+                onClick={() => (stagedImage ? sendVisionMessage(chatInput) : sendChatMessage(chatInput))}
+                disabled={chatLoading || visionBusy || (!stagedImage && !chatInput.trim())}
                 className="min-h-[3rem] px-4 rounded-xl bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600/50 active:scale-95 transition-all disabled:opacity-40 shrink-0 text-sm font-medium"
               >
                 Gửi
