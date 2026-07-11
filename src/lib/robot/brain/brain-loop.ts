@@ -7,6 +7,7 @@ import { Scheduler } from "./scheduler";
 import { observeWorld } from "./world-state";
 import type { ActionType, BrainCycleResult, BrainLoopInputs, GoalId } from "./types";
 import type { SocialMood } from "../social/types";
+import type { ActionOutcome } from "../body/types";
 
 // BrainLoop — Phase 6G mục "Architecture"/"Loop". Điểm gộp DUY NHẤT
 // Observe→Think→Prioritize→Plan cho robot (Execute là việc của page.tsx —
@@ -52,6 +53,28 @@ export class BrainLoop {
   /** Gắn chủ đề vừa chat vào khách hiện tại (nếu có) — passthrough sang SocialBrain, xem noteTopic() trong social-brain.ts. */
   noteTopic(now: number, inputs: BrainLoopInputs, topic: string): void {
     this.socialBrain.noteTopic(now, this.buildSocialCtx(inputs), topic);
+  }
+
+  /**
+   * Phase 6H "Brain Feedback"/"Recovery" — page.tsx gọi hàm này SAU KHI
+   * ActionExecutor (src/lib/robot/body/) thực thi xong 1 PlannedAction do
+   * `cycle()` trả ra, kèm đúng `actionCycleNow` (tham số `now` của LẦN
+   * cycle() đã sinh ra action đó — việc thực thi vốn bất đồng bộ, có thể
+   * xong sau vài cycle 200ms khác đã chạy tiếp).
+   *
+   * CHỈ xử lý khi thất bại thật (body executor báo lỗi/bận — KHÔNG phải
+   * "thiếu capability nhưng có fallback", trường hợp đó vẫn succeeded=true)
+   * — coi như lượt chào/mời đó CHƯA từng xảy ra, mở lại cooldown ngay để
+   * không bị khoá oan 60s/90s, "retry if appropriate". Cố tình KHÔNG đụng
+   * `previousAction`/`lastMeaningfulActivityAt` ở đây — báo cáo tới muộn
+   * (sau nhiều cycle khác đã ghi đè state mới hơn) sẽ làm hỏng state gần
+   * nhất nếu ghi đè ngược; `rollbackGreeting`/`rollbackInvite` tự an toàn vì
+   * chỉ xoá đúng bản ghi khớp timestamp, bản ghi mới hơn không bị đụng tới.
+   */
+  reportOutcome(outcome: ActionOutcome, actionCycleNow: number): void {
+    if (outcome.succeeded) return;
+    if (outcome.requestedAction === "StartConversation") this.cooldowns.rollbackGreeting(actionCycleNow);
+    if (outcome.requestedAction === "Invite") this.cooldowns.rollbackInvite(actionCycleNow);
   }
 
   cycle(now: number, inputs: BrainLoopInputs): BrainCycleResult {

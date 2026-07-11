@@ -11,6 +11,9 @@ import { BrainLoop } from "@/lib/robot/brain/brain-loop";
 import type { BrainCycleResult, BrainLoopInputs, ConversationState, VisualHint } from "@/lib/robot/brain/types";
 import { moodFaceParams } from "@/lib/robot/social/mood-engine";
 import type { SocialMood } from "@/lib/robot/social/types";
+import { observeBody } from "@/lib/robot/body/body-state";
+import { ActionExecutor } from "@/lib/robot/body/action-executor";
+import type { ActionOutcome, BodyExecutor, BodyState } from "@/lib/robot/body/types";
 import type { RobotMood } from "@/lib/robot-ai/types";
 
 // Bản reset (2026-07-08) — 1 màn demo sạch: mặt robot + 6 nút demo + chat gọn.
@@ -64,7 +67,24 @@ import type { RobotMood } from "@/lib/robot-ai/types";
 // 15s/30s/60s) chỉ là lớp idle-ambience/lưới an toàn phía dưới. Thêm 1 lớp
 // cooldown TOÀN CỤC mới (chào 60s/mời 90s/đùa-hoặc-câu-bán-hàng-y-hệt 5
 // phút — "never spam", KHÁC cooldown per-target đã có của AttentionEngine).
-// Không đụng Vision provider/Conversation Agent/Device Manager/ESP32.
+//
+// Phase 6H (2026-07-11) — Embodied Robot: robot biết rõ nó LÀM ĐƯỢC gì
+// trước khi thử làm, thay vì cứ ra lệnh rồi mặc định thành công. BodyState
+// (src/lib/robot/body/, thuần logic) chụp lại 15 field trạng thái "thân
+// thể" mỗi cycle — field nào KHÔNG có cảm biến thật trong trình duyệt/chưa
+// nối ESP32 (charging/temperature) thì LUÔN null, không bịa. PlannedAction
+// từ BrainLoop giờ đi qua ActionExecutor: Capability Check (đủ điều kiện
+// không, vd LookLeft cần servoAvailable — simulator không có servo thật nên
+// LUÔN mô phỏng bằng mắt, degraded nhưng vẫn chạy) → BodyExecutor (interface
+// dùng chung cho ESP32/Simulator/Desktop/Browser — page.tsx là implementation
+// DUY NHẤT hiện có, mô phỏng trên web) → Result (ActionOutcome, không bao
+// giờ throw/treo — thiếu capability mà không có cách bù thì rơi về
+// StaySilent kèm lý do rõ ràng, "never fail silently") → Brain Feedback
+// (BrainLoop.reportOutcome() mở lại cooldown chào/mời nếu body báo thất bại
+// thật — "retry if appropriate", không bị khoá oan). Debug overlay "Nâng
+// cao" có thêm khối BodyState + kết quả thực thi. Không đụng Vision
+// provider/Conversation Agent/Device Manager/ESP32 — kiến trúc thuần, không
+// có code phần cứng nào.
 
 type RobotState = "idle" | "listening" | "thinking" | "speaking" | "happy" | "sleeping" | "error";
 
@@ -343,6 +363,14 @@ export default function RobotPage() {
   const gestureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mouthTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ─── Body Runtime (Phase 6H) ──────────────────────────────────────────────
+  const [battery, setBattery] = useState<number | null>(null);
+  const [bodyState, setBodyState] = useState<BodyState | null>(null);
+  const [lastOutcome, setLastOutcome] = useState<ActionOutcome | null>(null);
+  const actionExecutorRef = useRef<ActionExecutor | null>(null);
+  if (!actionExecutorRef.current) actionExecutorRef.current = new ActionExecutor();
+  const previousBodyRef = useRef<BodyState | null>(null);
+
   // Dọn camera stream + object URL khi rời trang — không để camera bật ngầm.
   useEffect(() => {
     return () => {
@@ -521,13 +549,15 @@ export default function RobotPage() {
   // actions") sau này chỉ việc đọc lại các DeviceEvent "brain.*" này, KHÔNG
   // chặn UI nếu lỗi/mất mạng (BrainLoop.cycle() bản thân không await gì cả —
   // "Never block" — log là việc RIÊNG của executor này, ngoài vòng lặp).
-  function logBrainAction(result: BrainCycleResult) {
+  // Phase 6H — kèm luôn ActionOutcome thật (executedAction có thể khác
+  // requestedAction nếu degraded/thất bại), không chỉ ý định ban đầu nữa.
+  function logBrainAction(result: BrainCycleResult, outcome: ActionOutcome) {
     fetch("/api/robot/event", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        event_type: `brain.${result.action.type}`,
-        payload: { goal: result.goal, action: result.action, visualHint: result.visualHint } as unknown as Record<string, unknown>,
+        event_type: `brain.${outcome.executedAction}`,
+        payload: { goal: result.goal, action: result.action, visualHint: result.visualHint, outcome } as unknown as Record<string, unknown>,
       }),
     }).catch(() => {
       // Không có robot device/offline — Brain Loop vẫn chạy được trên simulator.
@@ -551,61 +581,52 @@ export default function RobotPage() {
     else if (hint === "wave_gesture") triggerGesture("wave", 900);
   }
 
-  // Execute — bước cuối cùng của vòng lặp (Observe→Think→Prioritize→Plan đã
-  // xong bên trong BrainLoop.cycle(), thuần logic không đụng DOM). Đúng 15
-  // action cố định, switch đủ cả 15 để TypeScript tự báo thiếu nếu sau này
-  // vocabulary đổi.
-  function executeBrainAction(result: BrainCycleResult) {
-    logBrainAction(result);
-    applyMoodVisuals(result.action.mood);
-    applyVisualHint(result.visualHint);
-    setLastCycle(result);
-
-    const { action } = result;
-    switch (action.type) {
-      case "Blink":
+  // ─── Body Executor (Phase 6H) — implementation DUY NHẤT hiện có của
+  // interface BodyExecutor (src/lib/robot/body/types.ts), mô phỏng "thân
+  // thể" trên trình duyệt. Đây là nơi DUY NHẤT chạm DOM/React cho phần thân
+  // thể — ActionExecutor/CapabilityCheck (lib/) chỉ QUYẾT ĐỊNH có nên gọi
+  // hàm nào ở đây không, không tự làm gì cả. Cùng interface này, sau có
+  // ESP32/Desktop implementation khác thì ActionExecutor không cần đổi gì.
+  function createBrowserBodyExecutor(): BodyExecutor {
+    return {
+      async moveHead(direction) {
+        if (direction === "left") applyGaze("left");
+        else if (direction === "right") applyGaze("right");
+        else setGazeOverride(null);
+        return true;
+      },
+      async lookAtPerson() {
+        setGazeOverride(null); // cameraTarget (prop RobotFaceKiosk) đã tự dẫn hướng liên tục
+        return true;
+      },
+      async blink() {
         setBlinkTrigger((n) => n + 1);
-        break;
-      case "LookLeft":
-        applyGaze("left");
-        break;
-      case "LookRight":
-        applyGaze("right");
-        break;
-      case "LookAtPerson":
-        setGazeOverride(null); // cameraTarget (prop RobotFaceKiosk bên dưới) đã tự dẫn hướng liên tục
-        break;
-      case "Smile":
-        triggerMouthSmile(1200);
-        break;
-      case "Wave":
-        triggerGesture("wave", 900);
-        break;
-      case "Sleep":
-        setRobotState("sleeping");
-        break;
-      case "Wait":
-      case "StaySilent":
-        break; // "Doing nothing is a valid action" (mục "Thinking") — không cần side-effect
-      case "ReturnIdle":
-        setRobotState("idle"); // vừa rời 1 goal khác (Watching/Waiting/Selling/Sleeping...) — trả mặt về đúng trạng thái nghỉ, không để lại state cũ (vd "listening") lỡ dở
-        break;
-      case "ContinueConversation":
-        break; // luồng chat thật (sendChatMessage/speak) đã tự lo hết hiệu ứng, tránh làm 2 lần
-      case "StartConversation":
-      case "Invite":
-      case "Speak":
-      case "EndConversation":
-        break; // xử lý `say` chung bên dưới, dùng cho cả 4 loại
-    }
-
-    if (action.say) {
-      setMessages((prev) => [...prev, { id: `brain-${Date.now()}`, role: "robot", content: action.say as string, created_at: new Date().toISOString() }]);
-      applyGaze("center");
-      const faceState = moodFaceParams(action.mood).faceState;
-      if (autoSpeak) speak(action.say, () => setRobotState(faceState));
-      else setRobotState(faceState);
-    }
+        return true;
+      },
+      async setExpression(expression) {
+        if (expression === "smile") triggerMouthSmile(1200);
+        return true;
+      },
+      async gesture(kind) {
+        triggerGesture(kind === "wave" ? "wave" : "nod", 900);
+        return true;
+      },
+      async speak(text) {
+        setMessages((prev) => [...prev, { id: `brain-${Date.now()}`, role: "robot", content: text, created_at: new Date().toISOString() }]);
+        applyGaze("center");
+        if (!autoSpeak) return true; // tôn trọng tuỳ chọn người dùng — vẫn hiện chữ, chỉ không phát âm thanh, không phải "thất bại"
+        return new Promise<boolean>((resolve) => {
+          speak(text, () => resolve(true));
+        });
+      },
+      async setScreenState(state) {
+        setRobotState(state);
+        return true;
+      },
+      async silence() {
+        return true;
+      },
+    };
   }
 
   // BrainLoop chạy mỗi 200ms (mục "Loop": "Run every 200ms" — nhanh hơn hẳn
@@ -615,8 +636,17 @@ export default function RobotPage() {
   // isListening/sellingContext/lastResponse/robotState...) sẽ "đóng băng" ở
   // giá trị render đầu nếu gọi thẳng, nên interval gọi qua ref "luôn mới
   // nhất" này (gán lại mỗi render, cùng pattern Phase 6E/6F đã dùng).
-  function runBrainCycle() {
-    if (!brainLoopRef.current) return;
+  //
+  // Phase 6H nối thêm Body Runtime SAU Plan, TRƯỚC khi áp hiệu ứng lên UI:
+  // PlannedAction (6G) → observeBody() → ActionExecutor (Capability Check →
+  // BodyExecutor → Result) → BrainLoop.reportOutcome() (Brain Feedback) →
+  // áp hiệu ứng THEO ĐÚNG những gì thật sự xảy ra (outcome), không phải ý
+  // định ban đầu. runBrainCycle async vì speak() cần đợi nói xong, nhưng
+  // setInterval() KHÔNG đợi — cycle sau vẫn nổ đúng giờ dù cycle trước còn
+  // đang nói (goal Conversation tự khoá lại nên các cycle xen giữa chỉ ra
+  // ContinueConversation/im lặng, không tranh chấp lẫn nhau, xem brain-loop.ts).
+  async function runBrainCycle() {
+    if (!brainLoopRef.current || !actionExecutorRef.current) return;
     const now = Date.now();
     const inputs: BrainLoopInputs = {
       frame: latestFrameRef.current,
@@ -628,7 +658,36 @@ export default function RobotPage() {
       chatMood: lastResponse?.mood as RobotMood | undefined,
     };
     const result = brainLoopRef.current.cycle(now, inputs);
-    executeBrainAction(result);
+
+    const eyeDirection = gazeOverride ?? cameraTarget ?? { x: 0, y: 0 };
+    const body = observeBody(
+      {
+        eyeDirection,
+        screenState: robotState as RobotFaceState,
+        speakerBusy: robotState === "speaking",
+        micBusy: isListening,
+        cameraBusy: cameraOpen || visionBusy,
+        battery,
+        cameraAvailable: presenceEnabled || cameraOpen,
+      },
+      previousBodyRef.current
+    );
+    previousBodyRef.current = body;
+    setBodyState(body);
+
+    const outcome = await actionExecutorRef.current.execute(result.action, body, createBrowserBodyExecutor());
+    brainLoopRef.current.reportOutcome(outcome, now);
+
+    logBrainAction(result, outcome);
+    applyMoodVisuals(result.action.mood);
+    applyVisualHint(result.visualHint);
+    setLastCycle(result);
+    setLastOutcome(outcome);
+
+    // setScreenState (Sleep) đã tự đổi robotState bên trong BodyExecutor —
+    // chỉ còn cần set lại state SAU KHI nói xong (mood-driven, executor
+    // không biết mood để tự làm việc này).
+    if (outcome.say) setRobotState(moodFaceParams(result.action.mood).faceState);
   }
   const runBrainCycleRef = useRef(runBrainCycle);
   runBrainCycleRef.current = runBrainCycle;
@@ -655,6 +714,17 @@ export default function RobotPage() {
         setSellingContext(name === "ChinChin");
       } catch {
         // Lỗi mạng tạm thời — giữ nguyên giá trị cũ, không đổi mood vì lỗi vặt.
+      }
+      // Phase 6H BodyState.battery — % pin THẬT từ RobotState.battery
+      // (Postgres, cùng route /api/robot/status Phase 6A đã dùng), không
+      // phải cảm biến trình duyệt nào cả. Gộp chung 1 vòng poll 30s, không
+      // thêm request riêng.
+      try {
+        const res = await fetch("/api/robot/status");
+        const json = (await res.json()) as { state?: { battery?: number } };
+        if (!cancelled && typeof json.state?.battery === "number") setBattery(json.state.battery);
+      } catch {
+        // Lỗi mạng tạm thời — giữ nguyên giá trị pin cũ (hoặc null nếu chưa từng lấy được).
       }
     }
     poll();
@@ -1280,6 +1350,41 @@ export default function RobotPage() {
           <p className="mt-2 text-zinc-600">
             Brain Loop (Phase 6G) — Observe→Think→Prioritize→Plan mỗi 200ms. Luật xã hội (look/chào/mời) chỉ chạy khi
             bật camera Presence ở trên; idle behaviors/goal Idle vẫn chạy dù tắt.
+          </p>
+        </Card>
+
+        {/* BodyState + Action Executor (Phase 6H) */}
+        <Card className="mt-2 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-1 font-mono text-zinc-400">
+            <span>headAngle: {bodyState ? `pan ${bodyState.headAngle.pan}° / tilt ${bodyState.headAngle.tilt}°` : "—"}</span>
+            <span>eyeDirection: {bodyState ? `${bodyState.eyeDirection.x.toFixed(2)}, ${bodyState.eyeDirection.y.toFixed(2)}` : "—"}</span>
+            <span>screenState: {bodyState?.screenState ?? "—"}</span>
+            <span>speakerBusy: {bodyState ? (bodyState.speakerBusy ? "có" : "không") : "—"}</span>
+            <span>micBusy: {bodyState ? (bodyState.micBusy ? "có" : "không") : "—"}</span>
+            <span>cameraBusy: {bodyState ? (bodyState.cameraBusy ? "có" : "không") : "—"}</span>
+            <span>battery: {bodyState?.battery ?? "—"}</span>
+            <span>charging: {bodyState?.charging === null || bodyState === null ? "không rõ" : bodyState.charging ? "có" : "không"}</span>
+            <span>wifi: {bodyState?.wifi ?? "—"}</span>
+            <span>temperature: {bodyState?.temperature ?? "không rõ"}</span>
+            <span>motionState: {bodyState?.motionState ?? "—"}</span>
+            <span>servoAvailable: {bodyState ? (bodyState.servoAvailable ? "có" : "không") : "—"}</span>
+            <span>displayAvailable: {bodyState ? (bodyState.displayAvailable ? "có" : "không") : "—"}</span>
+            <span>voiceAvailable: {bodyState ? (bodyState.voiceAvailable ? "có" : "không") : "—"}</span>
+            <span>cameraAvailable: {bodyState ? (bodyState.cameraAvailable ? "có" : "không") : "—"}</span>
+          </div>
+          {lastOutcome && (
+            <div className="mt-3 pt-2 border-t border-zinc-800 grid grid-cols-2 sm:grid-cols-3 gap-y-1 font-mono text-zinc-400">
+              <span>requested: {lastOutcome.requestedAction}</span>
+              <span>executed: {lastOutcome.executedAction}</span>
+              <span>succeeded: {lastOutcome.succeeded ? "có" : "không"}</span>
+              <span>degraded: {lastOutcome.degraded ? "có" : "không"}</span>
+            </div>
+          )}
+          {lastOutcome && <p className="mt-2 text-zinc-500">Outcome reason: {lastOutcome.reason}</p>}
+          <p className="mt-2 text-zinc-600">
+            Body Runtime (Phase 6H) — mọi PlannedAction đi qua Capability Check trước khi chạm BodyExecutor; thiếu
+            capability mà có cách bù thì vẫn chạy (degraded), không thì rơi về StaySilent kèm lý do rõ ràng, không
+            bao giờ im lặng vô cớ. charging/temperature luôn "không rõ" — chưa có cảm biến thật (chưa nối ESP32).
           </p>
         </Card>
       </details>

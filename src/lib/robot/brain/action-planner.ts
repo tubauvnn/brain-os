@@ -37,6 +37,16 @@ export class CooldownTracker {
   recordInvite(now: number): void {
     this.lastInviteAt = now;
   }
+  // Phase 6H "Brain Feedback"/"Recovery" — nếu body executor báo thất bại
+  // (vd loa đang bận thật), lượt "chào"/"mời" đó COI NHƯ CHƯA XẢY RA — bỏ
+  // cooldown vừa ghi để lần watching/invite kế tiếp có thể thử lại ngay,
+  // thay vì bị khoá oan 60s/90s cho 1 việc chưa thực sự nói được.
+  rollbackGreeting(recordedAt: number): void {
+    if (this.lastGreetingAt === recordedAt) this.lastGreetingAt = null;
+  }
+  rollbackInvite(recordedAt: number): void {
+    if (this.lastInviteAt === recordedAt) this.lastInviteAt = null;
+  }
   recordLine(text: string, now: number): void {
     this.lineLastUsedAt.set(text, now);
   }
