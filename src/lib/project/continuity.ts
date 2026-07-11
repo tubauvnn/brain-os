@@ -23,16 +23,29 @@ export type ContinuityState = {
   updatedAt: string;
 };
 
-// Giá trị khởi tạo lần đầu — phản ánh tiến độ THẬT tại thời điểm Phase 6B bắt
-// đầu (xác nhận qua git log, không bịa). Sau lần đọc đầu tiên, file được ghi
-// lại và mọi lần sau đọc thẳng từ đĩa — updateContinuity() (gọi qua
-// /api/robot/continuity hoặc agent nội bộ) là cách DUY NHẤT thay đổi từ đây.
+// Giá trị khởi tạo lần đầu — phản ánh tiến độ THẬT (xác nhận qua git log,
+// không bịa). Sau lần đọc đầu tiên, file được ghi lại và mọi lần sau đọc
+// thẳng từ đĩa — updateContinuity() (gọi qua /api/robot/continuity hoặc
+// agent nội bộ) là cách DUY NHẤT thay đổi từ đây.
+//
+// Phase 6D — CỐ TÌNH viết bằng ngôn ngữ thường, KHÔNG nhắc tên module/lớp kỹ
+// thuật nội bộ (Conversation Agent/Intent Resolver/Orchestrator/"Robot
+// Personality layer"...). Nội dung này đi THẲNG vào câu trả lời cho người
+// dùng (qua RobotAgent → Personality) khi hỏi "làm tới đâu rồi" — nếu tự nó
+// đã đầy thuật ngữ kỹ thuật thì lớp Personality phải "dọn" lại mỗi lần, dễ
+// sót (xem thực tế phát hiện lúc kiểm thử Phase 6D). Viết sạch ngay từ nguồn
+// là cách chắc chắn nhất, không phụ thuộc 1 lớp rewrite phải đoán đúng 100%.
 const SEED_CONTINUITY: Omit<ContinuityState, "activeProjectId" | "updatedAt"> = {
-  currentPhase: "Phase 6B — Relationship Memory & Continuity",
-  currentTask: "Nối bộ nhớ quan hệ (People) và trạng thái công việc (continuity record) vào Chuối",
-  lastCompletedAction:
-    "Phase 6A hoàn tất: /robot dùng pipeline Brain OS thật (Conversation Agent → Intent Resolver → Orchestrator/Memory/Device Manager) và có Robot Personality layer",
-  nextRecommendedAction: "Kiểm thử đầy đủ Phase 6B rồi cập nhật roadmap cho bước tiếp theo",
+  currentPhase: "Phase 6D — Multimodal Robot Conversation",
+  // CỐ TÌNH mô tả theo KẾT QUẢ người dùng thấy được (trả lời mượt hơn khi
+  // câu hỏi cần nhiều thứ cùng lúc), KHÔNG mô tả CƠ CHẾ nội bộ (không nói
+  // "ghép capability"/"planner tự chọn...") — bản trước có nói vậy, lộ ra
+  // trong câu trả lời thật lúc kiểm thử ("Phase của tôi... ghép các phần
+  // như nhớ, xử lý ảnh... để chọn cách trả lời hợp nhất") dù không chứa từ
+  // cấm cụ thể nào, vẫn phạm tinh thần "Never expose... planner" (mục 7).
+  currentTask: "Giúp Chuối trả lời mượt hơn khi 1 câu hỏi cần nhiều thông tin cùng lúc, ví dụ vừa xem ảnh vừa nhớ chuyện cũ",
+  lastCompletedAction: "Đã thêm khả năng nhìn và hiểu ảnh cho Chuối, cùng với trí nhớ về người quen và tiến độ công việc",
+  nextRecommendedAction: "Kiểm thử đầy đủ rồi cập nhật roadmap cho bước tiếp theo",
   blockedBy: [],
 };
 

@@ -7,6 +7,7 @@ import { TaskOrchestrator } from "@/lib/orchestrator";
 import { getActiveProjectContext, getContinuity, getProjectById } from "@/lib/project";
 import { getOwnerContext, findMentionedPeople } from "@/lib/people";
 import { loadSessionHistoryText } from "@/lib/brain/session-context";
+import { runRobotAgent } from "@/lib/robot-ai/robot-agent";
 import { resolveIntent, type Intent } from "./intent-resolver";
 import type { ConversationInput, ConversationResult, ExecutionContext } from "./types";
 
@@ -49,7 +50,34 @@ function createExecutionContext(input: ConversationInput): ExecutionContext {
 // hiện tại (không dump cả bảng vào prompt, xem src/lib/memory/index.ts), và
 // thêm relationship memory (People, xem src/lib/people/) cho người được nhắc
 // tới trong câu — cả 2 đều "chỉ lấy cái liên quan", không bơm toàn bộ DB.
+//
+// Phase 6D — client "robot" (ctx.source === "robot") rẽ sang RobotAgent
+// (src/lib/robot-ai/robot-agent.ts): Capability Planner tự quyết định cần
+// vision/memory/project/knowledge/device/tool/search nào rồi chạy SONG SONG,
+// merge lại — thay hẳn nhánh cố định Memory+Knowledge+Project bên dưới CHỈ
+// cho robot. Client khác (web/api/mobile, không có camera/vision UI) vẫn
+// dùng đúng nhánh cũ, không đổi hành vi, không hồi quy.
 async function handleChat(ctx: ExecutionContext, message: string): Promise<IntentOutcome> {
+  if (ctx.source === "robot") {
+    const agentResult = await runRobotAgent(message, ctx.sessionId);
+    await log({
+      action: "robot_agent.completed",
+      entity: "ExecutionContext",
+      entity_id: ctx.id,
+      // capabilitiesUsed chỉ vào log nội bộ — KHÔNG đưa vào meta trả lên
+      // route.ts (route.ts không expose meta ra response JSON, nhưng vẫn
+      // tránh đặt tên field dễ bị lộ nhầm sau này).
+      payload: { capabilitiesUsed: agentResult.capabilitiesUsed },
+    });
+    return {
+      reply: agentResult.reply,
+      model: agentResult.model,
+      memoryUsed: agentResult.memoryUsed,
+      knowledgeUsed: agentResult.knowledgeUsed,
+      memoryWritten: false,
+    };
+  }
+
   const memory = await recallMemory(message);
   await log({
     action: "memory.read",

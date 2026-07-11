@@ -41,7 +41,7 @@ export function inferVisionMode(prompt: string | undefined): VisionMode {
 // "quan trọng" thay người dùng, tránh lưu bừa.
 const SAVE_REQUEST_PHRASES = ["lưu ảnh", "lưu lại ảnh", "nhớ ảnh này", "giữ ảnh này"];
 
-function isExplicitSaveRequest(prompt: string | undefined): boolean {
+export function isExplicitSaveRequest(prompt: string | undefined): boolean {
   if (!prompt) return false;
   const lower = prompt.toLowerCase();
   return SAVE_REQUEST_PHRASES.some((p) => lower.includes(p));
@@ -69,7 +69,29 @@ export type AnalyzeRobotVisionInput = {
   sessionId?: string;
 };
 
-export async function analyzeRobotVision(input: AnalyzeRobotVisionInput): Promise<VisionOutput> {
+// Kết quả THÔ của Vision Provider + Memory/Project Context liên quan — CHƯA
+// qua Robot Personality, CHƯA sinh audio. Phase 6D (RobotAgent/capability
+// planner, src/lib/robot-ai/robot-agent.ts) gọi hàm này TRỰC TIẾP khi vision
+// chỉ là 1 trong nhiều capability được gộp — tránh gọi Personality/ElevenLabs
+// 2 LẦN (1 lần ở đây, 1 lần ở bước merge cuối của RobotAgent). Route
+// /api/robot/vision/analyze (Phase 6C, luồng "gửi hẳn 1 ảnh" từ nút bấm
+// camera/upload) vẫn dùng analyzeRobotVision() bên dưới — vỏ bọc mỏng gọi
+// hàm này rồi tự thêm Personality/Voice/Save, HÀNH VI KHÔNG ĐỔI.
+export type RawVisionAnalysis = {
+  status: "success" | "error";
+  text: string;
+  mode: VisionMode;
+  objects: string[];
+  detectedText: string;
+  observations: string[];
+  confidence: number | null;
+  memoryUsed: string[];
+  projectContextUsed: string[];
+  usedPreviousImage: boolean;
+  error?: string;
+};
+
+export async function getVisionAnalysis(input: AnalyzeRobotVisionInput): Promise<RawVisionAnalysis> {
   const mode = input.mode ?? inferVisionMode(input.prompt);
 
   let previousImage: TempImageRecord | undefined;
@@ -91,17 +113,16 @@ export async function analyzeRobotVision(input: AnalyzeRobotVisionInput): Promis
   const provider = VisionRouter.resolve(DEFAULT_VISION_PROVIDER);
   if (!provider) {
     return {
+      status: "error",
       text: "Chưa có bộ phận thị giác nào sẵn sàng để phân tích ảnh.",
-      visionMode: mode,
+      mode,
       objects: [],
       detectedText: "",
       observations: [],
       confidence: null,
-      imageStored: false,
       memoryUsed: [],
       projectContextUsed: [],
-      suggestedActions: [],
-      audio: null,
+      usedPreviousImage: false,
       error: `Không tìm thấy vision provider "${DEFAULT_VISION_PROVIDER}".`,
     };
   }
@@ -117,37 +138,69 @@ export async function analyzeRobotVision(input: AnalyzeRobotVisionInput): Promis
   });
 
   if (result.status === "error" || !result.text) {
-    const errorText = "Mình chưa xem được ảnh này, thử gửi lại giúp mình nhé.";
-    const styledError = await applyRobotPersonality(errorText, {
-      userText: input.prompt ?? "",
-      intent: "vision_understanding",
-      success: false,
-    });
     return {
-      text: styledError,
-      visionMode: mode,
+      status: "error",
+      text: "Mình chưa xem được ảnh này, thử gửi lại giúp mình nhé.",
+      mode,
+      objects: [],
+      detectedText: "",
+      observations: [],
+      confidence: null,
+      memoryUsed: memory.items.map((m) => m.title),
+      projectContextUsed: projectContext ? [projectContext.name] : [],
+      usedPreviousImage: !!previousImage,
+      error: result.error,
+    };
+  }
+
+  let text = result.text;
+  if (mode === "compare_with_previous" && !previousImage) {
+    text = `${text} (Lưu ý: mình chưa có ảnh trước đó để so sánh trong phiên này.)`;
+  }
+
+  return {
+    status: "success",
+    text,
+    mode,
+    objects: result.objects ?? [],
+    detectedText: result.detectedText ?? "",
+    observations: result.observations ?? [],
+    confidence: result.confidence ?? null,
+    memoryUsed: memory.items.map((m) => m.title),
+    projectContextUsed: projectContext ? [projectContext.name] : [],
+    usedPreviousImage: !!previousImage,
+  };
+}
+
+// Luồng ĐẦY ĐỦ Phase 6C (giữ nguyên hành vi cho /api/robot/vision/analyze):
+// getVisionAnalysis() + Robot Personality + lưu ảnh (nếu yêu cầu rõ) +
+// ElevenLabs — dùng khi vision là TOÀN BỘ response (gửi hẳn 1 ảnh qua nút
+// camera/upload), không phải 1 phần của multimodal merge.
+export async function analyzeRobotVision(input: AnalyzeRobotVisionInput): Promise<VisionOutput> {
+  const raw = await getVisionAnalysis(input);
+
+  const styledText = await applyRobotPersonality(raw.text, {
+    userText: input.prompt ?? "",
+    intent: "vision_understanding",
+    success: raw.status === "success",
+  });
+
+  if (raw.status === "error") {
+    return {
+      text: styledText,
+      visionMode: raw.mode,
       objects: [],
       detectedText: "",
       observations: [],
       confidence: null,
       imageStored: false,
-      memoryUsed: memory.items.map((m) => m.title),
-      projectContextUsed: projectContext ? [projectContext.name] : [],
+      memoryUsed: raw.memoryUsed,
+      projectContextUsed: raw.projectContextUsed,
       suggestedActions: [],
       audio: null,
-      error: result.error,
+      error: raw.error,
     };
   }
-
-  if (mode === "compare_with_previous" && !previousImage) {
-    result.text = `${result.text} (Lưu ý: mình chưa có ảnh trước đó để so sánh trong phiên này.)`;
-  }
-
-  const styledText = await applyRobotPersonality(result.text, {
-    userText: input.prompt ?? "",
-    intent: "vision_understanding",
-    success: true,
-  });
 
   let imageStored = false;
   if (isExplicitSaveRequest(input.prompt)) {
@@ -158,7 +211,7 @@ export async function analyzeRobotVision(input: AnalyzeRobotVisionInput): Promis
     // lưu vĩnh viễn, chỉ không gắn vào 1 Postgres Project cụ thể.
     imageStored = await promoteTempImage(input.image.id);
     if (imageStored) {
-      await rememberIfSafe(`Ảnh đã lưu (${input.image.filename}): ${result.text}`.slice(0, 500), "robot-vision:analyze");
+      await rememberIfSafe(`Ảnh đã lưu (${input.image.filename}): ${raw.text}`.slice(0, 500), "robot-vision:analyze");
     }
   }
 
@@ -173,20 +226,20 @@ export async function analyzeRobotVision(input: AnalyzeRobotVisionInput): Promis
   }
 
   const suggestedActions: string[] = [];
-  if (mode === "read_text" && result.detectedText) suggestedActions.push("Đọc to nội dung");
+  if (raw.mode === "read_text" && raw.detectedText) suggestedActions.push("Đọc to nội dung");
   if (!imageStored) suggestedActions.push("Lưu ảnh này");
-  if (mode !== "compare_with_previous") suggestedActions.push("So với ảnh trước có gì khác");
+  if (raw.mode !== "compare_with_previous") suggestedActions.push("So với ảnh trước có gì khác");
 
   return {
     text: styledText,
-    visionMode: mode,
-    objects: result.objects ?? [],
-    detectedText: result.detectedText ?? "",
-    observations: result.observations ?? [],
-    confidence: result.confidence ?? null,
+    visionMode: raw.mode,
+    objects: raw.objects,
+    detectedText: raw.detectedText,
+    observations: raw.observations,
+    confidence: raw.confidence,
     imageStored,
-    memoryUsed: memory.items.map((m) => m.title),
-    projectContextUsed: projectContext ? [projectContext.name] : [],
+    memoryUsed: raw.memoryUsed,
+    projectContextUsed: raw.projectContextUsed,
     suggestedActions,
     audio,
   };

@@ -134,7 +134,15 @@ function includesAny(text: string, phrases: string[]): boolean {
   return phrases.some((p) => text.includes(p));
 }
 
+// Phase 6D — "tới đâu"/"đến đâu" là thành ngữ HỎI TIẾN ĐỘ ("làm tới đâu rồi"),
+// không phải lệnh di chuyển, dù "tới" nằm trong ROBOT_ACTION_WORDS. Không loại
+// trừ thì "Hôm trước mình làm robot tới đâu?" bị nuốt nhầm thành robot_command
+// (khớp "robot"+"tới") → trả lời "chào bạn" vô nghĩa thay vì trả lời tiến độ
+// thật qua RobotAgent (capability planner, xem robot-ai/capability-planner.ts).
+const PROGRESS_INQUIRY_PHRASES = ["tới đâu", "đến đâu"];
+
 function isRobotCommand(text: string): boolean {
+  if (includesAny(text, PROGRESS_INQUIRY_PHRASES)) return false;
   if (text.includes("robot") && includesAny(text, ROBOT_ACTION_WORDS)) return true;
   return includesAny(text, ROBOT_QUICK_COMMAND_PHRASES);
 }
@@ -146,7 +154,12 @@ export function resolveIntent(message: string): Intent {
   if (includesAny(text, FORGET_MEMORY_PHRASES)) return "forget_memory";
   if (includesAny(text, REMEMBER_PHRASES)) return "remember";
   if (includesAny(text, RECALL_MEMORY_PHRASES)) return "recall_memory";
-  if (includesAny(text, WORK_STATUS_PHRASES)) return "work_status";
+  // Phase 6D — "so với X" là SO SÁNH (thường kèm ảnh, xem robot-ai/
+  // capability-planner.ts), không phải hỏi tiến độ Brain OS dù câu có chứa
+  // "hôm qua" (1 trong WORK_STATUS_PHRASES) — "So với hôm qua." phải rơi
+  // xuống "chat" để Capability Planner tự quyết Vision+Memory, không bị
+  // work_status nuốt mất trước.
+  if (!text.includes("so với") && includesAny(text, WORK_STATUS_PHRASES)) return "work_status";
   if (isRobotCommand(text)) return "robot_command";
   if (includesAny(text, PROJECT_REQUEST_PHRASES)) return "project_request";
   if (includesAny(text, IMAGE_REQUEST_PHRASES)) return "image_request";
