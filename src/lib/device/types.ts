@@ -9,7 +9,7 @@
 
 export type DeviceType = "robot" | "camera" | "speaker" | "display" | "esp32" | "unknown";
 
-export type DeviceStatus = "online" | "offline" | "idle" | "error" | "mock";
+export type DeviceStatus = "online" | "offline" | "idle" | "error" | "simulated";
 
 // Device Contract — mô tả 1 thiết bị Device Manager biết điều khiển.
 export type DeviceDescriptor = {

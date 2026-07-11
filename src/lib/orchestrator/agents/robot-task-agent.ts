@@ -2,8 +2,8 @@ import { DeviceManager } from "@/lib/device";
 import type { AgentMetadata, Task, TaskAgent, TaskAgentResult } from "../types";
 
 // Robot Task Agent — ADAPTER mỏng bọc Device Manager (src/lib/device/, KHÔNG
-// sửa gì ở đó ngoài thêm command mock mới trong providers/mock-robot.ts) để
-// khớp hợp đồng TaskAgent, cùng nguyên tắc voice-task-agent.ts bọc VoiceRouter.
+// sửa gì ở đó ngoài thêm command mới trong providers/mock-robot.ts) để khớp
+// hợp đồng TaskAgent, cùng nguyên tắc voice-task-agent.ts bọc VoiceRouter.
 // Trước Phase 6A, intent "robot_command" gọi thẳng DeviceManager từ Conversation
 // Agent — giờ đi qua đúng chuỗi Conversation Agent → Intent Resolver →
 // Task Orchestrator → Robot Agent → Device Manager → Device Provider như yêu cầu.

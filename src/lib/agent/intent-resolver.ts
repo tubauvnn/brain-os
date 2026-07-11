@@ -44,14 +44,14 @@ const RECALL_MEMORY_PHRASES = [
 // "chào"/"greet" thêm cho Phase 2 (Device Manager, lệnh "robot chào khách").
 // "kết nối"/"connect" thêm cho Phase 6A — câu hỏi trạng thái kết nối phần cứng
 // ("Robot thật đã kết nối chưa?") cũng cần đi qua Device Manager để trả lời
-// THẬT (mock/simulator hay đã có ESP32 thật), không để model đoán bừa.
+// THẬT (robot mô phỏng hay đã có ESP32 thật), không để model đoán bừa.
 const ROBOT_ACTION_WORDS = ["đi", "tới", "quay", "dừng", "tiến", "lùi", "di chuyển", "chào", "greet", "kết nối", "connect"];
 
-// Phase 6A — các câu lệnh demo cố định trên UI /robot (DEMO_BUTTONS trong
-// src/app/robot/page.tsx) không chứa từ "robot" nên không khớp
+// Phase 6A — các câu lệnh nhanh cố định trên UI /robot (QUICK_COMMAND_BUTTONS
+// trong src/app/robot/page.tsx) không chứa từ "robot" nên không khớp
 // ROBOT_ACTION_WORDS ở trên — liệt kê thẳng để vẫn đi qua Device Manager thay
 // vì rơi xuống "chat" (model không nên tự bịa hành động xoay đầu/ngủ/thức).
-const ROBOT_DEMO_PHRASES = ["chào khách", "quay trái", "quay phải", "ngủ đi", "thức dậy"];
+const ROBOT_QUICK_COMMAND_PHRASES = ["chào khách", "quay trái", "quay phải", "ngủ đi", "thức dậy"];
 
 const VOICE_REQUEST_PHRASES = ["nói câu", "đọc câu", "đọc to", "nói to"];
 
@@ -97,7 +97,7 @@ function includesAny(text: string, phrases: string[]): boolean {
 
 function isRobotCommand(text: string): boolean {
   if (text.includes("robot") && includesAny(text, ROBOT_ACTION_WORDS)) return true;
-  return includesAny(text, ROBOT_DEMO_PHRASES);
+  return includesAny(text, ROBOT_QUICK_COMMAND_PHRASES);
 }
 
 export function resolveIntent(message: string): Intent {

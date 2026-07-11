@@ -31,7 +31,7 @@ const ROBOT_COMMAND_PRESENTATION: Record<
     eyes: "center",
     mouth: "speaking",
     hardwareCommand: { type: "face", command: "greet" },
-    suggestedNextActions: ["Demo bán hàng", "Quay trái"],
+    suggestedNextActions: ["Giới thiệu bán hàng", "Quay trái"],
   },
   status: {
     mood: "thinking",

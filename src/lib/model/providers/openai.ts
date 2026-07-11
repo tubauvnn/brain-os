@@ -14,6 +14,7 @@ const SYSTEM_PROMPT = [
   "Trả lời ngắn gọn, chính xác, tự nhiên.",
   "Nếu có Context (Memory/Knowledge) được cung cấp, ưu tiên dùng đúng thông tin trong đó — không bịa thêm.",
   "Nếu Context không liên quan tới câu hỏi, bỏ qua, trả lời bình thường.",
+  "Không dùng các từ 'mock'/'demo'/'placeholder'/'fake' để mô tả câu trả lời hoặc bản thân. Nếu điều gì đó chưa thật/chưa kết nối, nói rõ bằng tiếng Việt tự nhiên (vd \"chưa kết nối phần cứng thật\", \"chưa có dữ liệu thật\").",
 ].join("\n");
 
 type OpenAiChatResponse = {

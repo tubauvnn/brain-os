@@ -62,8 +62,9 @@ export type RobotChatResult = {
   eyes?: RobotEyes;
   mouth?: RobotMouth;
   hardwareCommand?: RobotHardwareCommand;
-  // Gợi ý 2-3 hành động tiếp theo (nhãn tiếng Việt, khớp DEMO_BUTTONS hoặc câu
-  // local skill nhận diện được) — frontend hiển thị thành chip bấm nhanh dưới reply.
+  // Gợi ý 2-3 hành động tiếp theo (nhãn tiếng Việt, khớp QUICK_COMMAND_BUTTONS
+  // hoặc câu Intent Resolver nhận diện được) — frontend hiển thị thành chip
+  // bấm nhanh dưới reply.
   suggestedNextActions?: string[];
   // Ghi chú nội bộ ngắn cho <details> "Nâng cao" (vd "local scenario",
   // "language guard") — không hiển thị ở UI chính, không phải lỗi.

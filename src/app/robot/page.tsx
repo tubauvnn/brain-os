@@ -77,21 +77,22 @@ type ChatResponse = {
   error?: string | null;
 };
 
-const DEMO_BUTTONS: { label: string; text: string }[] = [
+const QUICK_COMMAND_BUTTONS: { label: string; text: string }[] = [
   { label: "Chào khách", text: "chào khách" },
   { label: "Mày là ai", text: "mày là ai" },
-  { label: "Demo bán hàng", text: "demo bán hàng" },
+  { label: "Giới thiệu bán hàng", text: "giới thiệu bán hàng" },
   { label: "Quay trái", text: "quay trái" },
   { label: "Quay phải", text: "quay phải" },
   { label: "Ngủ đi", text: "ngủ đi" },
 ];
 
-// suggestedNextActions từ backend là nhãn tiếng Việt (xem demo-scenarios.ts) —
-// map sang đúng text local skill nhận diện được khi user bấm chip gợi ý.
+// suggestedNextActions từ backend là nhãn tiếng Việt (xem
+// src/lib/robot-ai/presentation.ts) — map sang đúng text Intent Resolver
+// nhận diện được khi user bấm chip gợi ý.
 const SUGGESTION_TEXT_MAP: Record<string, string> = {
   "Chào khách": "chào khách",
   "Mày là ai": "mày là ai",
-  "Demo bán hàng": "demo bán hàng",
+  "Giới thiệu bán hàng": "giới thiệu bán hàng",
   "Quay trái": "quay trái",
   "Quay phải": "quay phải",
   "Ngủ đi": "ngủ đi",
@@ -515,11 +516,11 @@ export default function RobotPage() {
     <div className="p-4 sm:p-6 max-w-[1120px] mx-auto">
       <PageHeader
         title="Robot Chuối"
-        description="Demo robot trước khi nối ESP32-S3"
+        description="Robot mô phỏng trên web, trước khi nối ESP32-S3"
         action={
           <div className="flex items-center gap-2">
             <Badge variant="green">online</Badge>
-            <Badge variant="indigo">local skills + OpenAI optional</Badge>
+            <Badge variant="indigo">Brain OS Conversation Agent</Badge>
           </div>
         }
       />
@@ -552,12 +553,12 @@ export default function RobotPage() {
           </div>
         </Card>
 
-        {/* RIGHT — demo buttons + chat */}
+        {/* RIGHT — quick command buttons + chat */}
         <div className="flex flex-col gap-4">
           <Card>
-            <h3 className="text-sm font-medium text-zinc-100 mb-3">Demo nhanh</h3>
+            <h3 className="text-sm font-medium text-zinc-100 mb-3">Lệnh nhanh</h3>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {DEMO_BUTTONS.map((d) => (
+              {QUICK_COMMAND_BUTTONS.map((d) => (
                 <button
                   key={d.label}
                   disabled={chatLoading}

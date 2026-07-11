@@ -102,7 +102,7 @@ export default function DeviceManagerTestPage() {
     <div className="p-4 sm:p-6 max-w-3xl mx-auto">
       <PageHeader
         title="Device Manager Test"
-        description="Device Manager vertical slice (Phase 2) — Mock Robot Provider, tách biệt Physical Device Registry (/devices)"
+        description="Device Manager vertical slice (Phase 2) — Robot mô phỏng trên web, tách biệt Physical Device Registry (/devices)"
         action={
           <Badge variant={status === "success" ? "green" : status === "error" ? "red" : status === "loading" ? "indigo" : "default"}>
             {status}
@@ -126,7 +126,7 @@ export default function DeviceManagerTestPage() {
             <div key={d.id} className="flex items-center justify-between text-xs">
               <span className="text-zinc-300 font-mono">{d.id}</span>
               <span className="text-zinc-500">{d.type} · {d.provider}</span>
-              <Badge variant={d.status === "mock" ? "indigo" : "default"}>{d.status}</Badge>
+              <Badge variant={d.status === "simulated" ? "indigo" : "default"}>{d.status}</Badge>
             </div>
           ))}
         </div>
@@ -159,7 +159,10 @@ export default function DeviceManagerTestPage() {
               <option value="greet">greet</option>
               <option value="speak">speak</option>
               <option value="status">status</option>
-              <option value="move_placeholder">move_placeholder</option>
+              <option value="sleep">sleep</option>
+              <option value="wake">wake</option>
+              <option value="turn_left">turn_left</option>
+              <option value="turn_right">turn_right</option>
             </select>
           </div>
         </div>
